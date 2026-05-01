@@ -37,9 +37,45 @@ if ds_file and sac_file:
     sac_time_col = 'start timestamp [ns]'
     sac_amp_col = 'amplitude [deg]'
     
-    # 3. 시간 단위 통일 (DS는 이미 초 단위, 아이트래커는 ns -> s 변환)
-    df_ds['Time_s'] = df_ds[ds_time_col]
-    df_sac['Time_s'] = (df_sac[sac_time_col] / 1e9) + time_offset
+   # 3. 시간 단위 통일 및 영점(0초) 맞추기
+    # DS 데이터를 0초부터 시작하도록 맞춤
+    ds_start_time = df_ds[ds_time_col].min()
+    df_ds['Time_s'] = df_ds[ds_time_col] - ds_start_time
+
+    # 아이트래커 데이터를 0초부터 시작하도록 맞춤 (나노초 영점)
+    sac_start_time = df_sac[sac_time_col].min()
+    df_sac['Time_s'] = ((df_sac[sac_time_col] - sac_start_time) / 1e9) + time_offset
+
+    # 4. 그래프 생성 (Plotly)
+    fig = go.Figure()
+
+    # [레이어 1] 차량 속도 (Line)
+    if show_speed and ds_speed_col in df_ds.columns:
+        fig.add_trace(go.Scatter(
+            x=df_ds['Time_s'], y=df_ds[ds_speed_col], 
+            mode='lines', name='차량 속도 (km/h)', line=dict(color='royalblue', width=2)
+        ))
+
+    # [레이어 2] 시야각 (Scatter)
+    if show_saccade and sac_amp_col in df_sac.columns:
+        fig.add_trace(go.Scatter(
+            x=df_sac['Time_s'], y=df_sac[sac_amp_col], 
+            mode='markers', name='시선 이동 각도 (deg)',
+            marker=dict(size=8, color='crimson', symbol='diamond', opacity=0.7)
+        ))
+
+    # [레이어 3] 눈 깜빡임 (Vertical Lines)
+    if show_blink and blink_file:
+        df_blink = pd.read_csv(blink_file)
+        blink_time_col = 'start timestamp [ns]' 
+        
+        if blink_time_col in df_blink.columns:
+            # 눈 깜빡임 데이터도 아이트래커 기준 영점을 빼서 맞춤
+            df_blink['Time_s'] = ((df_blink[blink_time_col] - sac_start_time) / 1e9) + time_offset
+            for _, row in df_blink.iterrows():
+                fig.add_vline(x=row['Time_s'], line_width=1, line_dash="dash", line_color="orange", opacity=0.5)
+            # 범례 표시용
+            fig.add_trace(go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='orange', dash='dash'), name='눈 깜빡임 발생'))
 
     # 4. 그래프 생성 (Plotly)
     fig = go.Figure()
