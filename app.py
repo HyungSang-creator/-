@@ -13,10 +13,10 @@ st.title("🚗 원시 데이터 기반 실시간 시야각 & 주행 분석기")
 st.markdown("서버에 저장된 시나리오를 불러오거나, 새로운 데이터를 직접 업로드하여 분석할 수 있습니다.")
 
 # ---------------------------------------------------------
-# [핵심 함수 1] 폴더 내 기본 파일 자동 매칭
+# [핵심 함수 1] 폴더 내 파일 자동 매칭 (+ mapping.csv 추가)
 # ---------------------------------------------------------
 def find_files_in_folder(folder_path):
-    ds_file_path, sac_file_path, blink_file_path, fix_file_path = None, None, None, None
+    ds_file_path, sac_file_path, blink_file_path, fix_file_path, map_file_path = None, None, None, None, None
     
     for filename in os.listdir(folder_path):
         lower_name = filename.lower()
@@ -27,10 +27,12 @@ def find_files_in_folder(folder_path):
                 blink_file_path = os.path.join(folder_path, filename)
             elif 'fixation' in lower_name:
                 fix_file_path = os.path.join(folder_path, filename)
+            elif 'map' in lower_name or 'name' in lower_name: # 💡 매핑 파일 찾기
+                map_file_path = os.path.join(folder_path, filename)
             elif '_' in lower_name and 'world' not in lower_name:
                 ds_file_path = os.path.join(folder_path, filename)
                 
-    return ds_file_path, sac_file_path, blink_file_path, fix_file_path
+    return ds_file_path, sac_file_path, blink_file_path, fix_file_path, map_file_path
 
 # ---------------------------------------------------------
 # 1. 사이드바: 데이터 소스 선택
@@ -43,7 +45,7 @@ data_mode = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 
-df_ds, df_sac, df_blink, df_fix = None, None, None, None
+df_ds, df_sac, df_blink, df_fix, df_map = None, None, None, None, None
 data_loaded = False
 
 if data_mode == "💾 서버에 내장된 시나리오 불러오기":
@@ -53,13 +55,14 @@ if data_mode == "💾 서버에 내장된 시나리오 불러오기":
 
     if len(folder_options) > 0:
         selected_folder = st.sidebar.selectbox("분석할 시나리오 폴더 선택:", folder_options)
-        ds_path, sac_path, blink_path, fix_path = find_files_in_folder(selected_folder)
+        ds_path, sac_path, blink_path, fix_path, map_path = find_files_in_folder(selected_folder)
         
         if ds_path and sac_path:
             df_ds = pd.read_csv(ds_path)
             df_sac = pd.read_csv(sac_path)
             df_blink = pd.read_csv(blink_path) if blink_path else None
             df_fix = pd.read_csv(fix_path) if fix_path else None
+            df_map = pd.read_csv(map_path) if map_path else None # 💡 매핑 데이터 로드
             data_loaded = True
         else:
             st.sidebar.error(f"⚠️ '{selected_folder}' 폴더에서 필수 데이터를 찾지 못했습니다.")
@@ -70,14 +73,16 @@ else:
     st.sidebar.subheader("파일 업로드")
     ds_file = st.sidebar.file_uploader("주행 데이터 파일 업로드", type=['csv'])
     sac_file = st.sidebar.file_uploader("시선 이동(Saccade) 파일 업로드", type=['csv'])
-    blink_file = st.sidebar.file_uploader("눈 깜빡임(Blink) 파일 업로드", type=['csv'])
-    fix_file = st.sidebar.file_uploader("시선 고정(Fixations) 파일 업로드", type=['csv'])
+    blink_file = st.sidebar.file_uploader("눈 깜빡임(Blink) 업로드 (선택)", type=['csv'])
+    fix_file = st.sidebar.file_uploader("시선 고정(Fixations) 업로드 (선택)", type=['csv'])
+    map_file = st.sidebar.file_uploader("객체 이름 사전(mapping.csv) 업로드 (선택)", type=['csv'])
     
     if ds_file and sac_file:
         df_ds = pd.read_csv(ds_file)
         df_sac = pd.read_csv(sac_file)
         df_blink = pd.read_csv(blink_file) if blink_file else None
         df_fix = pd.read_csv(fix_file) if fix_file else None
+        df_map = pd.read_csv(map_file) if map_file else None
         data_loaded = True
     else:
         st.sidebar.info("분석할 CSV 파일들을 올려주세요.")
@@ -87,7 +92,7 @@ else:
 # ---------------------------------------------------------
 if data_loaded:
     custom_scenario_name = st.sidebar.text_input(
-        "📝 차트 제목(시나리오 이름) 변경:", 
+        "📝 차트 제목 변경:", 
         value=selected_folder if data_mode == "💾 서버에 내장된 시나리오 불러오기" else "새로운 분석 시나리오"
     )
     
@@ -101,34 +106,43 @@ if data_loaded:
     time_offset = st.sidebar.slider("아이트래커 시간 오차 보정 (초)", -10.0, 10.0, 0.0, 0.1)
 
     # ---------------------------------------------------------
-    # 💡 [핵심 추가] Fixations 기반 객체 선택 및 이름 변경 UI
+    # 💡 [핵심 추가] 매핑 파일 기반 자동 체크박스 생성기
     # ---------------------------------------------------------
-    selected_ids = []
-    custom_labels = {}
+    objects_to_draw = [] # 차트에 그릴 객체 리스트
     fix_id_col, fix_time_col = None, None
     
     if df_fix is not None:
-        st.sidebar.markdown("---")
-        st.sidebar.header("🎯 3. 감지된 객체 표시 (Fixations)")
-        
-        # fixation id 및 시간 열 유연하게 찾기
         fix_id_col = next((col for col in df_fix.columns if 'fixation id' in col.lower() or 'target' in col.lower() or 'object' in col.lower()), None)
         fix_time_col = next((col for col in df_fix.columns if 'start' in col.lower() or 'time' in col.lower()), None)
         
         if fix_id_col and fix_time_col:
-            # 유효한 숫자형 ID만 추출 (빈칸, NaN 제외)
             unique_ids = df_fix[fix_id_col].dropna().unique()
-            # 0이나 -1 같은 더미 데이터 제외하고 오름차순 정렬
-            valid_ids = sorted([int(x) for x in unique_ids if str(x).strip() and int(x) > 0])
+            valid_ids = [int(x) for x in unique_ids if str(x).strip() and int(x) > 0]
             
-            selected_ids = st.sidebar.multiselect("분석할 객체 번호를 선택하세요 (다중 선택):", valid_ids)
+            st.sidebar.markdown("---")
+            st.sidebar.header("🎯 3. 객체 감지 및 표시 (토글)")
             
-            if selected_ids:
-                st.sidebar.caption("👇 선택한 객체의 표시 이름을 변경하세요")
+            # 매핑 파일(df_map)이 있는 경우: 스마트 체크박스 모드
+            if df_map is not None:
+                st.sidebar.caption("✅ 매핑 파일이 감지되어 객체 이름이 자동 변환되었습니다.")
+                # 딕셔너리로 변환 (1열: ID, 2열: 이름)
+                mapping_dict = {int(row.iloc[0]): str(row.iloc[1]) for _, row in df_map.iterrows()}
+                
+                # 데이터(Fixation)에 존재하는 객체만 찾아서 체크박스 생성
+                for obj_id in valid_ids:
+                    if obj_id in mapping_dict:
+                        obj_name = mapping_dict[obj_id]
+                        # 개별 객체마다 체크박스 생성 (기본값 True)
+                        if st.sidebar.checkbox(f"🔴 {obj_name} (ID: {obj_id})", value=True):
+                            objects_to_draw.append((obj_id, obj_name))
+            
+            # 매핑 파일이 없는 경우: 기존의 선택 방식 유지
+            else:
+                st.sidebar.caption("⚠️ mapping.csv 파일이 없습니다. 수동으로 선택하세요.")
+                selected_ids = st.sidebar.multiselect("분석할 객체 번호 선택:", sorted(valid_ids))
                 for sid in selected_ids:
-                    custom_labels[sid] = st.sidebar.text_input(f"ID {sid} 표시 이름:", value=f"객체 {sid}")
-        else:
-            st.sidebar.warning("Fixations 파일에서 'fixation id' 열을 찾을 수 없습니다.")
+                    custom_name = st.sidebar.text_input(f"ID {sid} 표시 이름:", value=f"객체 {sid}")
+                    objects_to_draw.append((sid, custom_name))
 
     # ---------------------------------------------------------
     # 📌 수동 마커 기능
@@ -179,22 +193,18 @@ if data_loaded:
 
         if show_speed and ds_speed_col in df_ds.columns:
             fig.add_trace(go.Scatter(
-                x=df_ds['Time_s'], y=df_ds[ds_speed_col], 
-                mode='lines', name='차량 속도 (km/h)', line=dict(color='royalblue', width=2)
+                x=df_ds['Time_s'], y=df_ds[ds_speed_col], mode='lines', name='차량 속도 (km/h)', line=dict(color='royalblue', width=2)
             ), secondary_y=False)
 
         if show_offset and ds_offset_col and ds_offset_col in df_ds.columns:
             fig.add_trace(go.Scatter(
-                x=df_ds['Time_s'], y=df_ds[ds_offset_col], 
-                mode='lines', name='조향 편차 (m)', line=dict(color='seagreen', width=2, dash='dot')
+                x=df_ds['Time_s'], y=df_ds[ds_offset_col], mode='lines', name='조향 편차 (m)', line=dict(color='seagreen', width=2, dash='dot')
             ), secondary_y=True)
 
         if show_saccade and sac_amp_col in df_sac.columns:
             fig.add_trace(go.Scatter(
-                x=df_sac['Time_s'], y=df_sac[sac_amp_col], 
-                mode='lines', name='시선 이동 각도 (deg)',
-                fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', 
-                line=dict(color='crimson', width=0.5) 
+                x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동 각도 (deg)',
+                fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5) 
             ), secondary_y=False)
 
         if show_blink and df_blink is not None:
@@ -206,10 +216,8 @@ if data_loaded:
                     df_blink['Time_s'] = (df_blink[blink_time_col] - sac_start_time) + time_offset
                     
                 fig.add_trace(go.Scatter(
-                    x=df_blink['Time_s'], y=[-5] * len(df_blink), 
-                    mode='markers', name='눈 깜빡임 발생',
-                    marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)),
-                    hoverinfo='x+name'
+                    x=df_blink['Time_s'], y=[-5] * len(df_blink), mode='markers', name='눈 깜빡임 발생',
+                    marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'
                 ), secondary_y=False)
 
         lane_change_count = 0
@@ -223,36 +231,30 @@ if data_loaded:
                     last_lc_time = lc_time
             lane_change_count = len(filtered_lane_changes)
             for lc_time in filtered_lane_changes:
-                fig.add_vrect(
-                    x0=lc_time - 3.0, x1=lc_time + 3.0, 
-                    fillcolor="gold", opacity=0.15, layer="below", line_width=0,
-                    annotation_text="차선 변경", annotation_position="top left"
-                )
+                fig.add_vrect(x0=lc_time-3.0, x1=lc_time+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경", annotation_position="top left")
 
         # ---------------------------------------------------------
-        # 💡 [핵심 추가] 사용자가 선택한 객체(Fixations)만 그래프에 표시
+        # 💡 [핵심 연동] 체크박스가 켜진 객체들만 그래프에 그리기
         # ---------------------------------------------------------
-        if df_fix is not None and fix_id_col and fix_time_col and selected_ids:
-            for sid in selected_ids:
-                # 선택한 객체를 처음 바라본 순간의 데이터 한 줄을 가져옴
-                first_occurrence = df_fix[df_fix[fix_id_col] == sid].iloc[0]
+        if df_fix is not None and objects_to_draw:
+            for obj_id, obj_name in objects_to_draw:
+                # 선택한 객체를 처음 바라본 순간
+                first_occurrence = df_fix[df_fix[fix_id_col] == obj_id].iloc[0]
                 raw_t = first_occurrence[fix_time_col]
                 
-                # 아이트래커 기준 시간을 메인 그래프의 시간에 맞춰 보정
                 is_ns_fix = raw_t > 1e12
                 if is_ns_fix:
                     adj_time = ((raw_t - sac_start_time) / 1e9) + time_offset
                 else:
                     adj_time = (raw_t - sac_start_time) + time_offset
                 
-                # 그래프 위에 지정한 이름으로 빨간 점선 긋기
                 fig.add_vline(
                     x=adj_time, line_width=2, line_dash="dash", line_color="red",
-                    annotation_text=f"🎯 {custom_labels[sid]}", annotation_position="bottom right",
+                    annotation_text=f"🎯 {obj_name}", annotation_position="bottom right",
                     annotation_font=dict(color="red", size=14, family="Arial Black")
                 )
 
-        # 수동 마커 렌더링
+        # 수동 마커 그리기
         for marker in st.session_state['custom_markers'][custom_scenario_name]:
             fig.add_vline(
                 x=marker['time'], line_width=2, line_dash="dash", line_color="purple",
@@ -261,11 +263,8 @@ if data_loaded:
             )
 
         fig.update_layout(
-            title=f"[{custom_scenario_name}] 실시간 다중 레이어 분석 차트",
-            xaxis_title="주행 시간 (초)",
-            height=650,
-            hovermode="x unified",
-            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor='rgba(255, 255, 255, 0.7)')
+            title=f"[{custom_scenario_name}] 실시간 다중 레이어 분석 차트", xaxis_title="주행 시간 (초)",
+            height=650, hovermode="x unified", legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor='rgba(255, 255, 255, 0.7)')
         )
         
         fig.update_yaxes(title_text="속도 (km/h) / 시야각 (deg)", secondary_y=False)
