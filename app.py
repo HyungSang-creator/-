@@ -159,9 +159,25 @@ if data_loaded:
                     hoverinfo='x+name'
                 ), secondary_y=False)
 
-        lane_changes = df_ds[df_ds[ds_lane_col].diff().abs() > 0] if ds_lane_col and ds_lane_col in df_ds.columns else []
-        if show_lane_change and len(lane_changes) > 0:
-            for lc_time in lane_changes['Time_s']:
+        # [레이어 5] 차선 변경 구간 하이라이트 (바운싱 노이즈 제거 적용)
+        lane_change_count = 0
+        if show_lane_change and ds_lane_col and ds_lane_col in df_ds.columns:
+            # 값이 변한 모든 시간(초)을 리스트로 추출
+            raw_lane_changes = df_ds[df_ds[ds_lane_col].diff().abs() > 0]['Time_s'].tolist()
+            
+            filtered_lane_changes = []
+            last_lc_time = -999.0
+            
+            for lc_time in raw_lane_changes:
+                # 이전 차선 변경 시점으로부터 5초가 지났을 때만 '새로운 차선 변경'으로 인정
+                if lc_time - last_lc_time > 5.0:
+                    filtered_lane_changes.append(lc_time)
+                    last_lc_time = lc_time
+                    
+            lane_change_count = len(filtered_lane_changes)
+            
+            # 필터링된 진짜 차선 변경 시점에만 노란 박스 그리기
+            for lc_time in filtered_lane_changes:
                 fig.add_vrect(
                     x0=lc_time - 3.0, x1=lc_time + 3.0, 
                     fillcolor="gold", opacity=0.15, layer="below", line_width=0,
@@ -188,6 +204,8 @@ if data_loaded:
         col2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
         max_offset = round(df_ds[ds_offset_col].abs().max(), 2) if ds_offset_col and ds_offset_col in df_ds.columns else 0
         col3.metric("최대 조향 이탈", f"{max_offset} m")
-        col4.metric("차선 변경 횟수", f"{len(lane_changes)} 회")
+        
+        # 💡 요약 통계의 차선 변경 횟수도 필터링된 정확한 횟수(lane_change_count)로 변경
+        col4.metric("차선 변경 횟수", f"{lane_change_count} 회")
     else:
         st.error("⚠️ 데이터 구조(컬럼명)를 인식할 수 없습니다. 원본 파일 형식을 확인해주세요.")
