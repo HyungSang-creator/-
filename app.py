@@ -108,6 +108,13 @@ if data_loaded:
     ds_lane_col = 'laneNumber' if 'laneNumber' in df_ds.columns else ('Lane_ID' if 'Lane_ID' in df_ds.columns else None)
     ds_offset_col = 'offsetFromLaneCenter' if 'offsetFromLaneCenter' in df_ds.columns else None
     
+    # 💡 [핵심 추가] 주행 미숙으로 인한 가짜 차로(0차로, 3차로) 인식 방지 정제 로직
+    if ds_lane_col and ds_lane_col in df_ds.columns:
+        # 3차로 이상(우측 갓길 이탈)은 모두 2차로로 덮어쓰기
+        df_ds.loc[df_ds[ds_lane_col] >= 3, ds_lane_col] = 2
+        # 0차로 이하(좌측 중앙선 침범)는 모두 1차로로 덮어쓰기
+        df_ds.loc[df_ds[ds_lane_col] <= 0, ds_lane_col] = 1
+
     sac_time_col = 'start timestamp [ns]' if 'start timestamp [ns]' in df_sac.columns else 'start timestamp'
     sac_amp_col = 'amplitude [deg]' if 'amplitude [deg]' in df_sac.columns else 'amplitude'
     
@@ -204,8 +211,6 @@ if data_loaded:
         col2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
         max_offset = round(df_ds[ds_offset_col].abs().max(), 2) if ds_offset_col and ds_offset_col in df_ds.columns else 0
         col3.metric("최대 조향 이탈", f"{max_offset} m")
-        
-        # 💡 요약 통계의 차선 변경 횟수도 필터링된 정확한 횟수(lane_change_count)로 변경
         col4.metric("차선 변경 횟수", f"{lane_change_count} 회")
     else:
         st.error("⚠️ 데이터 구조(컬럼명)를 인식할 수 없습니다. 원본 파일 형식을 확인해주세요.")
