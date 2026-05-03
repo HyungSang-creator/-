@@ -64,7 +64,7 @@ else:
     ds_file = st.sidebar.file_uploader("주행 데이터 파일 업로드", type=['csv'])
     sac_file = st.sidebar.file_uploader("시선 이동(Saccade) 파일 업로드", type=['csv'])
     blink_file = st.sidebar.file_uploader("눈 깜빡임(Blink) 업로드 (선택)", type=['csv'])
-    fix_file = st.sidebar.file_uploader("시선 고정(Fixations) 업로드 (선택)", type=['csv'])
+    fix_file = st.uploader("시선 고정(Fixations) 업로드 (선택)", type=['csv'])
     map_file = st.sidebar.file_uploader("객체 이름 사전(mapping.csv) 업로드 (선택)", type=['csv'])
     if ds_file and sac_file:
         df_ds = pd.read_csv(ds_file)
@@ -426,8 +426,8 @@ if data_loaded:
             st.info(f"계산 결과: **{ssd_val:.2f} m** ➔ **{'🟢 Safety' if ssd_val <= d_val else '🔴 Danger'}**")
             
             st.markdown("**2. 구간 속도**")
-            # 💡 [신규] 구간 속도 설명 추가
-            st.caption("💡 **참고:** 구간 속도는 **휴머노이드 최초 인지 시점($t_a$)**부터 **차로 변경 시작 시점($t_b$)**까지 이동한 구간의 평균 속도입니다.")
+            # 💡 [수정] 캡션 내부의 ** 강조 표시를 모두 제거하여 평문으로 표시
+            st.caption("💡 참고: 구간 속도는 휴머노이드 최초 인지 시점(t_a)부터 차로 변경 시작 시점(t_b)까지 이동한 구간의 평균 속도입니다.")
             st.latex(r"구간 속도 = \frac{L}{t_b - t_a} \times 3.6")
             if tb_val > ta_val:
                 sms_val = (l_val / (tb_val - ta_val)) * 3.6
