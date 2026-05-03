@@ -269,7 +269,7 @@ if data_loaded:
                     marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'
                 ), secondary_y=False)
 
-        # 차선 변경 필터링 (통계 출력용 분리)
+        # 차선 변경 필터링
         lane_change_count = 0
         filtered_lane_changes = []
         if ds_lane_col and ds_lane_col in df_ds.columns:
@@ -317,7 +317,6 @@ if data_loaded:
                 adj_time = ((raw_t - sac_start_time) / 1e9) + time_offset if is_ns_fix else (raw_t - sac_start_time) + time_offset
                 
                 closest_ds_row = df_ds.iloc[(df_ds['Time_s'] - adj_time).abs().argsort()[:1]]
-                
                 dist_str = f"<br><span style='font-size:11px; font-family:Arial;'>({closest_ds_row[ds_dist_col].values[0]:.1f}m 지점)</span>" if ds_dist_col and not closest_ds_row.empty else ""
                 
                 fig.add_vline(
@@ -356,10 +355,9 @@ if data_loaded:
         col4.metric("👀 총 눈 깜빡임", f"{total_blinks} 회")
         col5.metric("차선 변경 횟수", f"{lane_change_count} 회")
         
-        # 💡 [신규 기능 4] 차선 변경 상세 통계 (±3초 구간 기준)
+        # 💡 [신규 업데이트] 차선 변경 상세 통계 - 글자 잘림을 방지하기 위한 HTML 표(Table) 형태 렌더링
         if lane_change_count > 0 and ds_dist_col:
             st.markdown("#### 🚧 첫 번째 차선 변경 상세 분석 (기준: 변경 시점 ±3초)")
-            lc_col1, lc_col2, lc_col3, lc_col4 = st.columns(4)
             
             first_lc = filtered_lane_changes[0]
             start_t = max(0, first_lc - 3.0)
@@ -371,10 +369,27 @@ if data_loaded:
             start_dist = start_row[ds_dist_col].values[0]
             end_dist = end_row[ds_dist_col].values[0]
             
-            lc_col1.metric("시작 지점 (시간 / 거리)", f"{start_t:.1f}초 / {start_dist:.1f}m")
-            lc_col2.metric("종료 지점 (시간 / 거리)", f"{end_t:.1f}초 / {end_dist:.1f}m")
-            lc_col3.metric("변경 소요 시간", f"{end_t - start_t:.1f}초")
-            lc_col4.metric("변경 중 이동 거리", f"{end_dist - start_dist:.1f}m")
+            custom_metric_html = f"""
+            <div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;">
+                <div style="flex: 1; padding: 0 10px;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p>
+                    <p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{start_t:.1f}초 / {start_dist:.1f}m</p>
+                </div>
+                <div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p>
+                    <p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{end_t:.1f}초 / {end_dist:.1f}m</p>
+                </div>
+                <div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p>
+                    <p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{end_t - start_t:.1f}초</p>
+                </div>
+                <div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p>
+                    <p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{end_dist - start_dist:.1f}m</p>
+                </div>
+            </div>
+            """
+            st.markdown(custom_metric_html, unsafe_allow_html=True)
 
     else:
         st.error("⚠️ 데이터 구조(컬럼명)를 인식할 수 없습니다. 원본 파일 형식을 확인해주세요.")
