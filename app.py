@@ -229,7 +229,7 @@ if data_loaded:
     if show_zones and ds_dist_col:
         work_zones = [
             {"name": "🟢 주의구간", "start": 1000.0, "end": 2500.0, "color": "rgba(144, 238, 144, 0.15)"},
-            {"name": "🟡 완화구간", "start": 2500.0, "end": 2720.0, "color": "rgba(255, 165, 0, 0.15)"},
+            {"name": "🟡 완화구간 (테이퍼)", "start": 2500.0, "end": 2720.0, "color": "rgba(255, 165, 0, 0.15)"},
             {"name": "🔴 작업구간", "start": 2720.0, "end": 3270.0, "color": "rgba(255, 0, 0, 0.15)"},
             {"name": "⚫ 종결구간", "start": 3270.0, "end": 3300.0, "color": "rgba(128, 128, 128, 0.15)"}
         ]
@@ -259,7 +259,6 @@ if data_loaded:
                 hovertemplate=f"<b>🤖 휴머노이드 물리적 위치</b><br>거리: {actual_h_pos}m<extra></extra>", showlegend=False
             ), secondary_y=False)
 
-    # 💡 [신규] 테이퍼 시점(2500m) 얇은 검은색 마커 추가
     if show_taper_pos and ds_dist_col:
         taper_df = df_ds[df_ds[ds_dist_col] >= 2500.0]
         if not taper_df.empty:
@@ -268,7 +267,7 @@ if data_loaded:
                 x=[taper_time, taper_time], y=[0, max_y], mode='lines', 
                 line=dict(color='black', width=1.5, dash='solid'),
                 name="테이퍼 시점", 
-                hovertemplate="<b>🚧 테이퍼 시점</b><br>위치: 2500.0m<extra></extra>", showlegend=False
+                hovertemplate="<b>🚧 테이퍼 시점 (차선 감소 시작)</b><br>위치: 2500.0m<extra></extra>", showlegend=False
             ), secondary_y=False)
 
     if df_fix is not None and objects_to_draw:
@@ -324,7 +323,6 @@ if data_loaded:
         lc_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{st_t:.1f}초 / {st_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{ed_t:.1f}초 / {ed_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_t - st_t:.1f}초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_dist - st_dist:.1f}m</p></div></div>'
         st.markdown(lc_html, unsafe_allow_html=True)
         
-        # 💡 [신규] 테이퍼 시점(2500m) 대비 여유 마진 분석 추가
         taper_df_stat = df_ds[df_ds[ds_dist_col] >= 2500.0]
         if not taper_df_stat.empty:
             st.markdown("#### 🛡️ 테이퍼 구간 진입 전 여유 마진 분석 (2500m 테이퍼 시점 기준)")
@@ -332,7 +330,7 @@ if data_loaded:
             lc_exact_dist = df_ds.iloc[(df_ds['Time_s'] - first_lc).abs().argsort()[:1]][ds_dist_col].values[0]
             
             margin_time = taper_time_stat - first_lc
-            margin_dist = 2500.0 - lc_exact_dist
+            margin_dist = max(0.0, 2500.0 - lc_exact_dist)
             
             margin_html = f'''
             <div style="display: flex; justify-content: space-between; text-align: center; background-color: #f4f6f9; padding: 20px; border-radius: 10px; border: 1px solid #d3d9e2; margin-top: 10px;">
@@ -383,7 +381,7 @@ if data_loaded:
     st.markdown("---")
     st.subheader("🛑 시나리오 안전성 평가 (SSD & 구간 속도)")
     with st.expander("🛠️ 교통 안전성 평가 데이터 및 결과 보기", expanded=True):
-        auto_ta, auto_tb, auto_v, auto_l = 0.0, 6.0, 90.0, 150.0
+        auto_ta, auto_tb, auto_v, auto_l, auto_d = 0.0, 6.0, 90.0, 150.0, 120.0
         
         target_id_ssd = None
         if objects_to_draw:
@@ -402,12 +400,13 @@ if data_loaded:
             dist_b = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]][ds_dist_col].values[0]
             dist_a = df_ds.iloc[(df_ds['Time_s'] - auto_ta).abs().argsort()[:1]][ds_dist_col].values[0]
             auto_l = abs(dist_b - dist_a)
+            auto_d = max(0.0, 2500.0 - dist_b) # 💡 테이퍼 여유 거리(안전거리) 자동 세팅
 
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("#### 📥 추출된 주행 파라미터")
             v_val = st.number_input("차로변경 시점 속도 V (km/h)", value=float(auto_v), format="%.2f")
-            d_val = st.number_input("테이퍼 시점과의 거리 D (m) [가정값]", value=120.0, step=10.0)
+            d_val = st.number_input("테이퍼 시점과의 거리 D (m)", value=float(auto_d), format="%.2f")
             l_val = st.number_input("구간 길이 L (m) [t_a ~ t_b 이동거리]", value=float(auto_l), format="%.2f")
             ta_val = st.number_input("휴머노이드 인지 시점 t_a (초)", value=float(auto_ta), format="%.2f")
             tb_val = st.number_input("차로 변경 시작 시점 t_b (초)", value=float(auto_tb), format="%.2f")
