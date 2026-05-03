@@ -231,7 +231,6 @@ if data_loaded:
 
         if show_accel:
             accel_col = next((col for col in df_ds.columns if 'accel' in col.lower() and 'x' in col.lower()), None)
-            
             if accel_col:
                 y_accel = df_ds[accel_col]
             else:
@@ -269,7 +268,7 @@ if data_loaded:
                     marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'
                 ), secondary_y=False)
 
-        # 차선 변경 필터링
+        # 차선 변경 필터링 (통계용 리스트 저장)
         lane_change_count = 0
         filtered_lane_changes = []
         if ds_lane_col and ds_lane_col in df_ds.columns:
@@ -355,7 +354,7 @@ if data_loaded:
         col4.metric("👀 총 눈 깜빡임", f"{total_blinks} 회")
         col5.metric("차선 변경 횟수", f"{lane_change_count} 회")
         
-        # 💡 [신규 업데이트] 차선 변경 상세 통계 - 글자 잘림을 방지하기 위한 HTML 표(Table) 형태 렌더링
+        # 차선 변경 상세 통계 (글자 잘림 방지 HTML 표)
         if lane_change_count > 0 and ds_dist_col:
             st.markdown("#### 🚧 첫 번째 차선 변경 상세 분석 (기준: 변경 시점 ±3초)")
             
@@ -390,6 +389,78 @@ if data_loaded:
             </div>
             """
             st.markdown(custom_metric_html, unsafe_allow_html=True)
+
+        # ---------------------------------------------------------
+        # 💡 [신규 기능 5] SSD & 구간 속도 실시간 안전성 평가 계산기
+        # ---------------------------------------------------------
+        st.markdown("---")
+        st.subheader("🛑 시나리오 안전성 평가 (SSD & 구간 속도)")
+
+        with st.expander("🛠️ 교통 안전성 평가 데이터 및 결과 보기", expanded=True):
+            st.markdown("노면 마찰 계수($f$)=0.8, 종단경사($s$)=0, 인지반응 시간($t_r$)=2.5초 기준")
+
+            # 1. 차트 데이터에서 자동으로 변수 추출하기
+            auto_ta, auto_tb, auto_v, auto_l = 0.0, 6.0, 90.0, 150.0
+            
+            # 데이터가 모두 존재할 때만 자동 계산 시도
+            if df_fix is not None and objects_to_draw and lane_change_count > 0 and ds_dist_col:
+                # t_a: 첫 번째 타겟 객체 인지 시간 (초)
+                obj_id, _ = objects_to_draw[0]
+                first_occurrence = df_fix[df_fix[fix_id_col] == obj_id].iloc[0]
+                raw_t = first_occurrence[fix_time_col]
+                is_ns_fix = raw_t > 1e12
+                auto_ta = ((raw_t - sac_start_time) / 1e9) + time_offset if is_ns_fix else (raw_t - sac_start_time) + time_offset
+                
+                # t_b: 첫 번째 차선 변경 시점 (초)
+                auto_tb = filtered_lane_changes[0]
+                
+                # V: 차선 변경 시점(t_b)의 실제 차량 속도
+                tb_row = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]]
+                auto_v = tb_row[ds_speed_col].values[0] if not tb_row.empty else 90.0
+                
+                # L: 인지(t_a)부터 변경(t_b)까지의 실제 이동 거리(m)
+                ta_row = df_ds.iloc[(df_ds['Time_s'] - auto_ta).abs().argsort()[:1]]
+                dist_b = tb_row[ds_dist_col].values[0] if not tb_row.empty else 150.0
+                dist_a = ta_row[ds_dist_col].values[0] if not ta_row.empty else 0.0
+                auto_l = abs(dist_b - dist_a)
+
+            # 2. 화면 분할하여 입력 폼과 결과 출력
+            c1, c2 = st.columns(2)
+
+            with c1:
+                st.markdown("#### 📥 추출된 주행 파라미터")
+                st.caption("차트에서 감지된 값으로 자동 세팅됩니다. 수동 변경도 가능합니다.")
+                v_val = st.number_input("차로변경 시점 속도 V (km/h)", value=float(auto_v), format="%.2f")
+                d_val = st.number_input("테이퍼 시점과의 거리 D (m) [가정값]", value=120.0, step=10.0)
+                l_val = st.number_input("구간 길이 L (m) [t_a ~ t_b 이동거리]", value=float(auto_l), format="%.2f")
+                ta_val = st.number_input("휴머노이드 인지 시점 t_a (초)", value=float(auto_ta), format="%.2f")
+                tb_val = st.number_input("차로 변경 시작 시점 t_b (초)", value=float(auto_tb), format="%.2f")
+
+            with c2:
+                st.markdown("#### 📊 평가 결과")
+                
+                f_val = 0.8
+                s_val = 0.0
+                tr_val = 2.5
+
+                # 1) SSD 계산 로직
+                ssd_val = (v_val**2) / (254 * (f_val + s_val)) + tr_val * (v_val / 3.6)
+                ssd_status = "🟢 Safety" if ssd_val <= d_val else "🔴 Danger"
+                
+                st.markdown("**1. 안전정지거리 (SSD)**")
+                st.latex(r"SSD = \frac{V^2}{254 \times (f + s)} + t_r \times \frac{V}{3.6}")
+                st.info(f"계산 결과: **{ssd_val:.2f} m** ➔ **{ssd_status}**")
+
+                # 2) 구간 속도(SMS) 계산 로직
+                st.markdown("**2. 구간 속도**")
+                st.latex(r"구간 속도 = \frac{L}{t_b - t_a} \times 3.6")
+                
+                if tb_val > ta_val:
+                    sms_val = (l_val / (tb_val - ta_val)) * 3.6
+                    sms_status = "🟢 Safety" if sms_val <= 80 else "🔴 Danger"
+                    st.info(f"계산 결과: **{sms_val:.2f} km/h** ➔ **{sms_status}**")
+                else:
+                    st.error("시간 오류: 인지 시점(t_a)이 변경 시점(t_b)보다 빠르거나 같을 수 없습니다.")
 
     else:
         st.error("⚠️ 데이터 구조(컬럼명)를 인식할 수 없습니다. 원본 파일 형식을 확인해주세요.")
