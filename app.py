@@ -91,12 +91,12 @@ if data_loaded:
 
     ds_dist_col = next((col for col in df_ds.columns if 'distance' in col.lower() or 'dist' in col.lower() or 'mileage' in col.lower()), None)
     
-    # 💡 [신규] 사이드바에 구간과 휴머노이드 위치 토글 스위치 추가
     st.sidebar.markdown("---")
     st.sidebar.header("🚨 3. 시나리오 구간 자동 감지")
     
     show_zones = st.sidebar.checkbox("🚧 이벤트 구간 배경 표시", value=True)
-    show_humanoid_pos = st.sidebar.checkbox("🤖 휴머노이드 고정 위치 표시", value=True)
+    show_humanoid_pos = st.sidebar.checkbox("🤖 휴머노이드 위치선 표시", value=True)
+    show_taper_pos = st.sidebar.checkbox("🛣️ 테이퍼(2500m) 시점선 표시", value=True)
     
     scenario_id = current_ds_filename.split('_')[0] if '_' in current_ds_filename else current_ds_filename[0]
     if scenario_id not in ['0', '1', '2', '3']:
@@ -111,7 +111,7 @@ if data_loaded:
     else:
         st.sidebar.warning("🤖 휴머노이드: **없음 (S0)**")
         
-    st.sidebar.caption("🗺️ 공사 구간: 1000m(주의) ➔ 2500m(완화) ➔ 2720m(작업) ➔ 3270m(종결)")
+    st.sidebar.caption("🗺️ 공사 구간: 1000m(주의) ➔ 2500m(완화/테이퍼) ➔ 2720m(작업) ➔ 3270m(종결)")
 
     # ---------------------------------------------------------
     # 4. 객체 감지 및 표시 (토글)
@@ -224,10 +224,8 @@ if data_loaded:
 
     if show_lane_change and lane_change_count > 0:
         for lc in filtered_lane_changes:
-            # 차선 변경은 기존처럼 시인성을 위해 노란 박스 유지 (이벤트 마커)
             fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경")
 
-    # 💡 [핵심 반영 1] 이벤트 구간: 마우스 호버로 텍스트 띄우기 & 토글 제어
     if show_zones and ds_dist_col:
         work_zones = [
             {"name": "🟢 주의구간", "start": 1000.0, "end": 2500.0, "color": "rgba(144, 238, 144, 0.15)"},
@@ -242,7 +240,6 @@ if data_loaded:
                 z_start_time = start_df.iloc[0]['Time_s']
                 z_end_time = end_df.iloc[0]['Time_s'] if not end_df.empty else df_ds['Time_s'].max()
                 if z_start_time < z_end_time:
-                    # Hover가 작동하도록 go.Scatter의 fill 속성 활용 (글씨 영구 표출 제거)
                     fig.add_trace(go.Scatter(
                         x=[z_start_time, z_end_time, z_end_time, z_start_time, z_start_time], 
                         y=[0, 0, max_y*1.1, max_y*1.1, 0], 
@@ -251,7 +248,6 @@ if data_loaded:
                         text=f"<b>{zone['name']}</b><br>{zone['start']}m ~ {zone['end']}m", showlegend=False
                     ), secondary_y=False)
 
-    # 💡 [핵심 반영 2] 휴머노이드 고정 위치: 마우스 호버 방식 & 토글 제어
     if show_humanoid_pos and actual_h_pos is not None and ds_dist_col:
         h_df = df_ds[df_ds[ds_dist_col] >= actual_h_pos]
         if not h_df.empty:
@@ -261,6 +257,18 @@ if data_loaded:
                 line=dict(color='purple', width=3, dash='solid'),
                 name="휴머노이드 물리적 위치", 
                 hovertemplate=f"<b>🤖 휴머노이드 물리적 위치</b><br>거리: {actual_h_pos}m<extra></extra>", showlegend=False
+            ), secondary_y=False)
+
+    # 💡 [신규] 테이퍼 시점(2500m) 얇은 검은색 마커 추가
+    if show_taper_pos and ds_dist_col:
+        taper_df = df_ds[df_ds[ds_dist_col] >= 2500.0]
+        if not taper_df.empty:
+            taper_time = taper_df.iloc[0]['Time_s']
+            fig.add_trace(go.Scatter(
+                x=[taper_time, taper_time], y=[0, max_y], mode='lines', 
+                line=dict(color='black', width=1.5, dash='solid'),
+                name="테이퍼 시점", 
+                hovertemplate="<b>🚧 테이퍼 시점</b><br>위치: 2500.0m<extra></extra>", showlegend=False
             ), secondary_y=False)
 
     if df_fix is not None and objects_to_draw:
@@ -316,6 +324,30 @@ if data_loaded:
         lc_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{st_t:.1f}초 / {st_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{ed_t:.1f}초 / {ed_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_t - st_t:.1f}초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_dist - st_dist:.1f}m</p></div></div>'
         st.markdown(lc_html, unsafe_allow_html=True)
         
+        # 💡 [신규] 테이퍼 시점(2500m) 대비 여유 마진 분석 추가
+        taper_df_stat = df_ds[df_ds[ds_dist_col] >= 2500.0]
+        if not taper_df_stat.empty:
+            st.markdown("#### 🛡️ 테이퍼 구간 진입 전 여유 마진 분석 (2500m 테이퍼 시점 기준)")
+            taper_time_stat = taper_df_stat.iloc[0]['Time_s']
+            lc_exact_dist = df_ds.iloc[(df_ds['Time_s'] - first_lc).abs().argsort()[:1]][ds_dist_col].values[0]
+            
+            margin_time = taper_time_stat - first_lc
+            margin_dist = 2500.0 - lc_exact_dist
+            
+            margin_html = f'''
+            <div style="display: flex; justify-content: space-between; text-align: center; background-color: #f4f6f9; padding: 20px; border-radius: 10px; border: 1px solid #d3d9e2; margin-top: 10px;">
+                <div style="flex: 1; padding: 0 10px;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">차선 변경 ➔ 테이퍼 시점 여유 시간</p>
+                    <p style="font-size: 18px; font-weight: bold; margin: 0; color: #2c3e50;">{margin_time:.2f} 초</p>
+                </div>
+                <div style="flex: 1; padding: 0 10px; border-left: 1px solid #d3d9e2;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">차선 변경 ➔ 테이퍼 시점 여유 거리</p>
+                    <p style="font-size: 18px; font-weight: bold; margin: 0; color: #2c3e50;">{margin_dist:.2f} m</p>
+                </div>
+            </div>
+            '''
+            st.markdown(margin_html, unsafe_allow_html=True)
+
         humanoid_id = None
         if df_fix is not None:
             for oid, oname in objects_to_draw:
