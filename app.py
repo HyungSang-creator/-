@@ -75,7 +75,7 @@ else:
         data_loaded = True
 
 # ---------------------------------------------------------
-# 2. 사이드바: 분석 옵션 및 자동 시나리오 세팅
+# 2. 사이드바: 분석 옵션 및 레이어
 # ---------------------------------------------------------
 if data_loaded:
     custom_scenario_name = st.sidebar.text_input("📝 차트 제목 변경:", value="새로운 분석 시나리오")
@@ -86,18 +86,21 @@ if data_loaded:
     show_offset = st.sidebar.checkbox("↔️ 조향 편차 (차로 이탈 정도)", value=True)
     show_saccade = st.sidebar.checkbox("👁️ 시선 이동 각도 (채워진 그래프)", value=True)
     show_blink = st.sidebar.checkbox("😌 눈 깜빡임 (하단 마커)", value=True)
-    show_lane_change = st.sidebar.checkbox("🚧 차선 변경 구간 하이라이트", value=True)
+    show_lane_change = st.sidebar.checkbox("🚧 차선 변경 궤적 하이라이트", value=True)
     time_offset = st.sidebar.slider("아이트래커 시간 오차 보정 (초)", -10.0, 10.0, 0.0, 0.1)
 
     ds_dist_col = next((col for col in df_ds.columns if 'distance' in col.lower() or 'dist' in col.lower() or 'mileage' in col.lower()), None)
     
-    # 💡 [신규] 파일명 기반 시나리오 번호 & 휴머노이드 위치 자동 세팅
+    # 💡 [신규] 사이드바에 구간과 휴머노이드 위치 토글 스위치 추가
     st.sidebar.markdown("---")
     st.sidebar.header("🚨 3. 시나리오 구간 자동 감지")
     
+    show_zones = st.sidebar.checkbox("🚧 이벤트 구간 배경 표시", value=True)
+    show_humanoid_pos = st.sidebar.checkbox("🤖 휴머노이드 고정 위치 표시", value=True)
+    
     scenario_id = current_ds_filename.split('_')[0] if '_' in current_ds_filename else current_ds_filename[0]
     if scenario_id not in ['0', '1', '2', '3']:
-        scenario_id = '1' # 알 수 없는 파일일 경우 기본값
+        scenario_id = '1'
         
     humanoid_positions = {'0': None, '1': 1000.0, '2': 1600.0, '3': 2200.0}
     actual_h_pos = humanoid_positions.get(scenario_id)
@@ -196,6 +199,7 @@ if data_loaded:
     # 차트 그리기
     # ---------------------------------------------------------
     fig = make_subplots(specs=[[{"secondary_y": True}]])
+    max_y = df_ds[ds_speed_col].max() if ds_speed_col in df_ds.columns else 100
 
     if show_speed and ds_speed_col in df_ds.columns:
         hovertemplate = '%{y:.1f} <br>📍 위치: %{customdata:.1f} m' if ds_dist_col else '%{y:.1f}'
@@ -220,15 +224,16 @@ if data_loaded:
 
     if show_lane_change and lane_change_count > 0:
         for lc in filtered_lane_changes:
+            # 차선 변경은 기존처럼 시인성을 위해 노란 박스 유지 (이벤트 마커)
             fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경")
 
-    # 💡 [신규] 명세해주신 고정 구간(1000~3300m)을 기반으로 백그라운드 색칠
-    if ds_dist_col:
+    # 💡 [핵심 반영 1] 이벤트 구간: 마우스 호버로 텍스트 띄우기 & 토글 제어
+    if show_zones and ds_dist_col:
         work_zones = [
-            {"name": "🟢 주의구간", "start": 1000.0, "end": 2500.0, "color": "lightgreen"},
-            {"name": "🟡 완화구간", "start": 2500.0, "end": 2720.0, "color": "orange"},
-            {"name": "🔴 작업구간", "start": 2720.0, "end": 3270.0, "color": "red"},
-            {"name": "⚫ 종결구간", "start": 3270.0, "end": 3300.0, "color": "gray"}
+            {"name": "🟢 주의구간", "start": 1000.0, "end": 2500.0, "color": "rgba(144, 238, 144, 0.15)"},
+            {"name": "🟡 완화구간", "start": 2500.0, "end": 2720.0, "color": "rgba(255, 165, 0, 0.15)"},
+            {"name": "🔴 작업구간", "start": 2720.0, "end": 3270.0, "color": "rgba(255, 0, 0, 0.15)"},
+            {"name": "⚫ 종결구간", "start": 3270.0, "end": 3300.0, "color": "rgba(128, 128, 128, 0.15)"}
         ]
         for zone in work_zones:
             start_df = df_ds[df_ds[ds_dist_col] >= zone["start"]]
@@ -237,17 +242,28 @@ if data_loaded:
                 z_start_time = start_df.iloc[0]['Time_s']
                 z_end_time = end_df.iloc[0]['Time_s'] if not end_df.empty else df_ds['Time_s'].max()
                 if z_start_time < z_end_time:
-                    fig.add_vrect(x0=z_start_time, x1=z_end_time, fillcolor=zone["color"], opacity=0.1, layer="below", line_width=1, annotation_text=zone["name"], annotation_position="top left", annotation_font=dict(size=12, color="gray"))
+                    # Hover가 작동하도록 go.Scatter의 fill 속성 활용 (글씨 영구 표출 제거)
+                    fig.add_trace(go.Scatter(
+                        x=[z_start_time, z_end_time, z_end_time, z_start_time, z_start_time], 
+                        y=[0, 0, max_y*1.1, max_y*1.1, 0], 
+                        fill='toself', fillcolor=zone["color"], mode='lines', line=dict(width=0),
+                        name=zone["name"], hoveron='fills', hoverinfo='text',
+                        text=f"<b>{zone['name']}</b><br>{zone['start']}m ~ {zone['end']}m", showlegend=False
+                    ), secondary_y=False)
 
-    # 💡 [신규] 휴머노이드 물리적 고정 위치를 눈에 띄는 실선으로 표시 (차량이 이 지점을 통과하는 순간)
-    if actual_h_pos is not None and ds_dist_col:
+    # 💡 [핵심 반영 2] 휴머노이드 고정 위치: 마우스 호버 방식 & 토글 제어
+    if show_humanoid_pos and actual_h_pos is not None and ds_dist_col:
         h_df = df_ds[df_ds[ds_dist_col] >= actual_h_pos]
         if not h_df.empty:
             h_pass_time = h_df.iloc[0]['Time_s']
-            fig.add_vline(x=h_pass_time, line_width=2.5, line_dash="solid", line_color="purple", annotation_text=f"🤖 휴머노이드 위치 ({actual_h_pos}m)", annotation_position="top left", annotation_font=dict(color="purple", size=13, family="Arial Black"))
+            fig.add_trace(go.Scatter(
+                x=[h_pass_time, h_pass_time], y=[0, max_y], mode='lines', 
+                line=dict(color='purple', width=3, dash='solid'),
+                name="휴머노이드 물리적 위치", 
+                hovertemplate=f"<b>🤖 휴머노이드 물리적 위치</b><br>거리: {actual_h_pos}m<extra></extra>", showlegend=False
+            ), secondary_y=False)
 
     if df_fix is not None and objects_to_draw:
-        max_y = df_ds[ds_speed_col].max() if ds_speed_col in df_ds.columns else 100
         for obj_id, obj_name in objects_to_draw:
             first_row = df_fix[df_fix[fix_id_col] == obj_id].iloc[0]
             raw_t = first_row[fix_time_col]
@@ -260,7 +276,7 @@ if data_loaded:
             fig.add_trace(go.Scatter(
                 x=[adj_time, adj_time], y=[0, max_y], mode='lines', 
                 line=dict(color=line_color, width=2, dash='dash' if "휴머노이드" in obj_name else 'dot'),
-                name=obj_name, hovertemplate=f"<b>🎯 {obj_name}</b><br>인지 위치: {dist_txt}<extra></extra>", showlegend=False
+                name=obj_name, hovertemplate=f"<b>🎯 {obj_name} 인지 시점</b><br>인지 위치: {dist_txt}<extra></extra>", showlegend=False
             ), secondary_y=False)
 
     fig.update_layout(title=f"[{custom_scenario_name}] 실시간 다중 레이어 분석 차트", xaxis_title="주행 시간 (초)", height=650, hovermode="x unified", legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor='rgba(255, 255, 255, 0.7)'))
@@ -319,7 +335,6 @@ if data_loaded:
                 react_time = tb - ta
                 react_dist = abs(dist_tb - dist_ta)
                 
-                # 💡 [신규] 알아낸 물리적 위치(actual_h_pos)를 바탕으로 '가시거리(전방 몇 m에서 봤는가)' 도출!
                 view_html = ""
                 if actual_h_pos is not None:
                     view_dist = max(0, actual_h_pos - dist_ta)
