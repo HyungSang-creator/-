@@ -99,10 +99,7 @@ if data_loaded:
     st.sidebar.markdown("---")
     st.sidebar.header("⚙️ 2. 분석 레이어 및 옵션")
     show_speed = st.sidebar.checkbox("📈 차량 속도 표시", value=True)
-    
-    # 💡 [신규 기능 3] 가속도 그래프 체크박스 추가
     show_accel = st.sidebar.checkbox("🚀 차량 가속도 표시 (m/s²)", value=False)
-    
     show_offset = st.sidebar.checkbox("↔️ 조향 편차 (차로 이탈 정도)", value=True)
     show_saccade = st.sidebar.checkbox("👁️ 시선 이동 각도 (채워진 그래프)", value=True)
     show_blink = st.sidebar.checkbox("😌 눈 깜빡임 (하단 마커)", value=True)
@@ -218,7 +215,6 @@ if data_loaded:
 
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-        # 💡 [신규 기능 1] 속도 툴팁에 위치(거리) 정보 병기
         if show_speed and ds_speed_col in df_ds.columns:
             if ds_dist_col:
                 hovertemplate = '%{y:.1f} <br>📍 위치: %{customdata:.1f} m'
@@ -233,20 +229,17 @@ if data_loaded:
                 customdata=custom_data, hovertemplate=hovertemplate
             ), secondary_y=False)
 
-        # 💡 [신규 기능 3] 가속도 그래프 렌더링
         if show_accel:
-            # 1순위: 시뮬레이터 원본 가속도 데이터 탐색
             accel_col = next((col for col in df_ds.columns if 'accel' in col.lower() and 'x' in col.lower()), None)
             
             if accel_col:
                 y_accel = df_ds[accel_col]
             else:
-                # 2순위: 원본이 없으면 속도(km/h)를 m/s로 변환 후 시간을 미분하여 가속도 계산
                 y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
                 
             fig.add_trace(go.Scatter(
                 x=df_ds['Time_s'], y=y_accel, 
-                mode='lines', name='가속도 (m/s²)', line=dict(color='darkmagenta', width=1.5, dash='dashdot')
+                mode='lines', name='가속도 (m/s²)', line=dict(color='darkmagenta', width=1.5)
             ), secondary_y=True)
 
         if show_offset and ds_offset_col and ds_offset_col in df_ds.columns:
@@ -276,21 +269,22 @@ if data_loaded:
                     marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'
                 ), secondary_y=False)
 
-        # 차선 변경 하이라이트
+        # 차선 변경 필터링 (통계 출력용 분리)
         lane_change_count = 0
-        if show_lane_change and ds_lane_col and ds_lane_col in df_ds.columns:
+        filtered_lane_changes = []
+        if ds_lane_col and ds_lane_col in df_ds.columns:
             raw_lane_changes = df_ds[df_ds[ds_lane_col].diff().abs() > 0]['Time_s'].tolist()
-            filtered_lane_changes = []
             last_lc_time = -999.0
             for lc_time in raw_lane_changes:
                 if lc_time - last_lc_time > 5.0:
                     filtered_lane_changes.append(lc_time)
                     last_lc_time = lc_time
             lane_change_count = len(filtered_lane_changes)
-            for lc_time in filtered_lane_changes:
-                fig.add_vrect(x0=lc_time-3.0, x1=lc_time+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경", annotation_position="top left")
+            
+            if show_lane_change:
+                for lc_time in filtered_lane_changes:
+                    fig.add_vrect(x0=lc_time-3.0, x1=lc_time+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경", annotation_position="top left")
 
-        # 공사장 구간 배경 하이라이트 (거리 기반 자동 연산)
         if caution_mode == "이동 거리(m) 기준" and caution_start_time is not None and ds_dist_col:
             base_m = caution_dist_input
             work_zones = [
@@ -314,7 +308,6 @@ if data_loaded:
                         annotation_text=zone["name"], annotation_position="top left", annotation_font=dict(size=12, color="gray")
                     )
 
-        # 객체 인지 시점(Fixations) 마커 렌더링
         if df_fix is not None and objects_to_draw:
             for obj_id, obj_name in objects_to_draw:
                 first_occurrence = df_fix[df_fix[fix_id_col] == obj_id].iloc[0]
@@ -323,9 +316,9 @@ if data_loaded:
                 is_ns_fix = raw_t > 1e12
                 adj_time = ((raw_t - sac_start_time) / 1e9) + time_offset if is_ns_fix else (raw_t - sac_start_time) + time_offset
                 
-                # 인지한 순간의 거리 정보 추출
                 closest_ds_row = df_ds.iloc[(df_ds['Time_s'] - adj_time).abs().argsort()[:1]]
-                dist_str = f"({closest_ds_row[ds_dist_col].values[0]:.1f}m)" if ds_dist_col and not closest_ds_row.empty else ""
+                
+                dist_str = f"<br><span style='font-size:11px; font-family:Arial;'>({closest_ds_row[ds_dist_col].values[0]:.1f}m 지점)</span>" if ds_dist_col and not closest_ds_row.empty else ""
                 
                 fig.add_vline(
                     x=adj_time, line_width=2, line_dash="dash", line_color="red",
@@ -333,7 +326,6 @@ if data_loaded:
                     annotation_font=dict(color="red", size=14, family="Arial Black")
                 )
 
-        # 수동 마커 그리기
         for marker in st.session_state['custom_markers'][custom_scenario_name]:
             fig.add_vline(
                 x=marker['time'], line_width=2, line_dash="dash", line_color="purple",
@@ -351,9 +343,6 @@ if data_loaded:
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # ---------------------------------------------------------
-        # 💡 [신규 기능 2] 통계 요약에 눈 깜빡임 횟수 추가 (5열 확장)
-        # ---------------------------------------------------------
         st.markdown("---")
         st.subheader(f"💡 '{custom_scenario_name}' 요약 통계")
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -366,5 +355,26 @@ if data_loaded:
         col3.metric("최대 조향 이탈", f"{max_offset} m")
         col4.metric("👀 총 눈 깜빡임", f"{total_blinks} 회")
         col5.metric("차선 변경 횟수", f"{lane_change_count} 회")
+        
+        # 💡 [신규 기능 4] 차선 변경 상세 통계 (±3초 구간 기준)
+        if lane_change_count > 0 and ds_dist_col:
+            st.markdown("#### 🚧 첫 번째 차선 변경 상세 분석 (기준: 변경 시점 ±3초)")
+            lc_col1, lc_col2, lc_col3, lc_col4 = st.columns(4)
+            
+            first_lc = filtered_lane_changes[0]
+            start_t = max(0, first_lc - 3.0)
+            end_t = first_lc + 3.0
+            
+            start_row = df_ds.iloc[(df_ds['Time_s'] - start_t).abs().argsort()[:1]]
+            end_row = df_ds.iloc[(df_ds['Time_s'] - end_t).abs().argsort()[:1]]
+            
+            start_dist = start_row[ds_dist_col].values[0]
+            end_dist = end_row[ds_dist_col].values[0]
+            
+            lc_col1.metric("시작 지점 (시간 / 거리)", f"{start_t:.1f}초 / {start_dist:.1f}m")
+            lc_col2.metric("종료 지점 (시간 / 거리)", f"{end_t:.1f}초 / {end_dist:.1f}m")
+            lc_col3.metric("변경 소요 시간", f"{end_t - start_t:.1f}초")
+            lc_col4.metric("변경 중 이동 거리", f"{end_dist - start_dist:.1f}m")
+
     else:
         st.error("⚠️ 데이터 구조(컬럼명)를 인식할 수 없습니다. 원본 파일 형식을 확인해주세요.")
