@@ -164,7 +164,6 @@ if data_loaded:
     is_ns = df_sac[sac_time_col].max() > 1e12
     df_sac['Time_s'] = ((df_sac[sac_time_col] - sac_start_time) / 1e9) + time_offset if is_ns else (df_sac[sac_time_col] - sac_start_time) + time_offset
 
-    # 💡 [버그 수정] 소수점 노이즈 무시 (round 처리) 및 쿨타임 증가
     lane_change_count = 0
     filtered_lane_changes = []
     
@@ -172,13 +171,11 @@ if data_loaded:
         df_ds.loc[df_ds[ds_lane_col] >= 3, ds_lane_col] = 2
         df_ds.loc[df_ds[ds_lane_col] <= 0, ds_lane_col] = 1
         
-        # round()를 추가하여 소수점 아래 미세 떨림으로 인한 오작동 방지
-        raw_lane_changes = df_ds[df_ds[ds_lane_col].round().diff().abs() >= 1]['Time_s'].tolist()
+        raw_lane_changes = df_ds[df_ds[ds_lane_col].diff().abs() > 0]['Time_s'].tolist()
         last_lc_time = -999.0
         
         for lc_time in raw_lane_changes:
-            # 10초 이내의 연속 변경은 동일 차선 변경으로 간주하여 무시
-            if lc_time - last_lc_time > 10.0:
+            if lc_time - last_lc_time > 5.0:
                 filtered_lane_changes.append(lc_time)
                 last_lc_time = lc_time
                 
@@ -237,7 +234,6 @@ if data_loaded:
                     annotation_text=zone["name"], annotation_position="top left", annotation_font=dict(size=12, color="gray")
                 )
 
-    # 💡 [핵심 반영] 휴머노이드 텍스트 숨기고 마우스 Hover 방식으로 통일
     if df_fix is not None and objects_to_draw:
         max_y = df_ds[ds_speed_col].max() if ds_speed_col in df_ds.columns else 100
         for obj_id, obj_name in objects_to_draw:
@@ -248,7 +244,6 @@ if data_loaded:
             close_row = df_ds.iloc[(df_ds['Time_s'] - adj_time).abs().argsort()[:1]]
             dist_txt = f"({close_row[ds_dist_col].values[0]:.1f}m 지점)" if ds_dist_col and not close_row.empty else ""
             
-            # 구분을 위해 색상만 다르게 처리 (휴머노이드=빨강, 표지판=파랑)
             line_color = 'red' if "휴머노이드" in obj_name else 'royalblue'
             
             fig.add_trace(go.Scatter(
@@ -293,6 +288,31 @@ if data_loaded:
         
         lc_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{st_t:.1f}초 / {st_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{ed_t:.1f}초 / {ed_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_t - st_t:.1f}초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_dist - st_dist:.1f}m</p></div></div>'
         st.markdown(lc_html, unsafe_allow_html=True)
+        
+        # 💡 [신규 업데이트] 인지 반응 분석 (인지 ➔ 차선 변경 시간/거리)
+        humanoid_id = None
+        if df_fix is not None:
+            for oid, oname in objects_to_draw:
+                if "휴머노이드" in oname:
+                    humanoid_id = oid
+                    break
+                    
+        if humanoid_id is not None:
+            st.markdown("#### ⏱️ 인지 반응 분석 (휴머노이드 인지 ➔ 차선 변경)")
+            raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
+            ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+            tb = first_lc
+            
+            if tb > ta:
+                dist_ta = df_ds.iloc[(df_ds['Time_s'] - ta).abs().argsort()[:1]][ds_dist_col].values[0]
+                dist_tb = df_ds.iloc[(df_ds['Time_s'] - tb).abs().argsort()[:1]][ds_dist_col].values[0]
+                react_time = tb - ta
+                react_dist = abs(dist_tb - dist_ta)
+                
+                react_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #fff9e6; padding: 20px; border-radius: 10px; border: 1px solid #fce79a; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차선 변경 소요 시간</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_time:.2f} 초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차선 변경 이동 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_dist:.2f} m</p></div></div>'
+                st.markdown(react_html, unsafe_allow_html=True)
+            else:
+                st.warning("⚠️ 차선 변경이 휴머노이드 인지보다 먼저 발생했습니다. (반응 속도 역전)")
 
     # ---------------------------------------------------------
     # 5. SSD & 구간 속도 평가
@@ -301,9 +321,19 @@ if data_loaded:
     st.subheader("🛑 시나리오 안전성 평가 (SSD & 구간 속도)")
     with st.expander("🛠️ 교통 안전성 평가 데이터 및 결과 보기", expanded=True):
         auto_ta, auto_tb, auto_v, auto_l = 0.0, 6.0, 90.0, 150.0
-        if df_fix is not None and objects_to_draw and lane_change_count > 0 and ds_dist_col:
-            obj_id, _ = objects_to_draw[0]
-            raw_t = df_fix[df_fix[fix_id_col] == obj_id].iloc[0][fix_time_col]
+        
+        # SSD 자동 계산용 타겟을 '휴머노이드'로 정확히 타겟팅
+        target_id_ssd = None
+        if objects_to_draw:
+            for oid, oname in objects_to_draw:
+                if "휴머노이드" in oname:
+                    target_id_ssd = oid
+                    break
+            if target_id_ssd is None:
+                target_id_ssd, _ = objects_to_draw[0]
+
+        if df_fix is not None and target_id_ssd is not None and lane_change_count > 0 and ds_dist_col:
+            raw_t = df_fix[df_fix[fix_id_col] == target_id_ssd].iloc[0][fix_time_col]
             auto_ta = ((raw_t - sac_start_time) / 1e9) + time_offset if raw_t > 1e12 else (raw_t - sac_start_time) + time_offset
             auto_tb = filtered_lane_changes[0]
             auto_v = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]][ds_speed_col].values[0]
