@@ -13,7 +13,7 @@ st.title("🚗 원시 데이터 기반 실시간 시야각 & 주행 분석기")
 st.markdown("서버에 저장된 시나리오를 불러오거나, 새로운 데이터를 직접 업로드하여 분석할 수 있습니다.")
 
 # ---------------------------------------------------------
-# [핵심 함수 1] 폴더 내 파일 자동 매칭 (+ mapping.csv 추가)
+# [핵심 함수 1] 폴더 내 파일 자동 매칭
 # ---------------------------------------------------------
 def find_files_in_folder(folder_path):
     ds_file_path, sac_file_path, blink_file_path, fix_file_path, map_file_path = None, None, None, None, None
@@ -27,7 +27,7 @@ def find_files_in_folder(folder_path):
                 blink_file_path = os.path.join(folder_path, filename)
             elif 'fixation' in lower_name:
                 fix_file_path = os.path.join(folder_path, filename)
-            elif 'map' in lower_name or 'name' in lower_name: # 💡 매핑 파일 찾기
+            elif 'map' in lower_name or 'name' in lower_name:
                 map_file_path = os.path.join(folder_path, filename)
             elif '_' in lower_name and 'world' not in lower_name:
                 ds_file_path = os.path.join(folder_path, filename)
@@ -62,7 +62,7 @@ if data_mode == "💾 서버에 내장된 시나리오 불러오기":
             df_sac = pd.read_csv(sac_path)
             df_blink = pd.read_csv(blink_path) if blink_path else None
             df_fix = pd.read_csv(fix_path) if fix_path else None
-            df_map = pd.read_csv(map_path) if map_path else None # 💡 매핑 데이터 로드
+            df_map = pd.read_csv(map_path) if map_path else None
             data_loaded = True
         else:
             st.sidebar.error(f"⚠️ '{selected_folder}' 폴더에서 필수 데이터를 찾지 못했습니다.")
@@ -88,7 +88,7 @@ else:
         st.sidebar.info("분석할 CSV 파일들을 올려주세요.")
 
 # ---------------------------------------------------------
-# 2. 사이드바: 분석 옵션 및 마커
+# 2. 사이드바: 분석 옵션 및 레이어
 # ---------------------------------------------------------
 if data_loaded:
     custom_scenario_name = st.sidebar.text_input(
@@ -99,6 +99,10 @@ if data_loaded:
     st.sidebar.markdown("---")
     st.sidebar.header("⚙️ 2. 분석 레이어 및 옵션")
     show_speed = st.sidebar.checkbox("📈 차량 속도 표시", value=True)
+    
+    # 💡 [신규 기능 3] 가속도 그래프 체크박스 추가
+    show_accel = st.sidebar.checkbox("🚀 차량 가속도 표시 (m/s²)", value=False)
+    
     show_offset = st.sidebar.checkbox("↔️ 조향 편차 (차로 이탈 정도)", value=True)
     show_saccade = st.sidebar.checkbox("👁️ 시선 이동 각도 (채워진 그래프)", value=True)
     show_blink = st.sidebar.checkbox("😌 눈 깜빡임 (하단 마커)", value=True)
@@ -106,9 +110,38 @@ if data_loaded:
     time_offset = st.sidebar.slider("아이트래커 시간 오차 보정 (초)", -10.0, 10.0, 0.0, 0.1)
 
     # ---------------------------------------------------------
-    # 💡 [핵심 추가] 매핑 파일 기반 자동 체크박스 생성기
+    # 3. 주의 구간 (이벤트 존) 설정
     # ---------------------------------------------------------
-    objects_to_draw = [] # 차트에 그릴 객체 리스트
+    st.sidebar.markdown("---")
+    st.sidebar.header("🚨 3. 주의 구간 (이벤트 존) 설정")
+    
+    ds_dist_col = next((col for col in df_ds.columns if 'distance' in col.lower() or 'dist' in col.lower() or 'mileage' in col.lower()), None)
+    
+    caution_mode = st.sidebar.radio("주의 구간 시작 기준", ["사용 안 함", "특정 시간(초) 기준", "이동 거리(m) 기준"])
+    caution_start_time = None
+    
+    if caution_mode == "특정 시간(초) 기준":
+        caution_start_time = st.sidebar.number_input("🚨 주의 구간 시작 시간 (초)", min_value=0.0, max_value=1000.0, value=60.0)
+    elif caution_mode == "이동 거리(m) 기준":
+        if ds_dist_col:
+            caution_dist_input = st.sidebar.number_input(f"🚨 주의 구간 시작 거리 (m)", min_value=0.0, max_value=10000.0, value=500.0)
+            st.sidebar.caption(f"감지된 거리 열: `{ds_dist_col}`")
+            over_dist_df = df_ds[df_ds[ds_dist_col] >= caution_dist_input]
+            temp_time_col = 'time' if 'time' in df_ds.columns else 'timestamp'
+            
+            if not over_dist_df.empty:
+                ds_start_time_raw = df_ds[temp_time_col].min()
+                raw_caution_time = over_dist_df[temp_time_col].iloc[0]
+                caution_start_time = raw_caution_time - ds_start_time_raw
+            else:
+                st.sidebar.warning("⚠️ 주행 데이터가 입력한 거리에 도달하지 못했습니다.")
+        else:
+            st.sidebar.error("⚠️ 거리(Distance) 열이 없어 기준 설정이 불가합니다.")
+
+    # ---------------------------------------------------------
+    # 4. 객체 감지 및 표시 (토글)
+    # ---------------------------------------------------------
+    objects_to_draw = []
     fix_id_col, fix_time_col = None, None
     
     if df_fix is not None:
@@ -120,23 +153,17 @@ if data_loaded:
             valid_ids = [int(x) for x in unique_ids if str(x).strip() and int(x) > 0]
             
             st.sidebar.markdown("---")
-            st.sidebar.header("🎯 3. 객체 감지 및 표시 (토글)")
+            st.sidebar.header("🎯 4. 객체 감지 및 표시 (토글)")
             
-            # 매핑 파일(df_map)이 있는 경우: 스마트 체크박스 모드
             if df_map is not None:
                 st.sidebar.caption("✅ 매핑 파일이 감지되어 객체 이름이 자동 변환되었습니다.")
-                # 딕셔너리로 변환 (1열: ID, 2열: 이름)
                 mapping_dict = {int(row.iloc[0]): str(row.iloc[1]) for _, row in df_map.iterrows()}
                 
-                # 데이터(Fixation)에 존재하는 객체만 찾아서 체크박스 생성
                 for obj_id in valid_ids:
                     if obj_id in mapping_dict:
                         obj_name = mapping_dict[obj_id]
-                        # 개별 객체마다 체크박스 생성 (기본값 True)
                         if st.sidebar.checkbox(f"🔴 {obj_name} (ID: {obj_id})", value=True):
                             objects_to_draw.append((obj_id, obj_name))
-            
-            # 매핑 파일이 없는 경우: 기존의 선택 방식 유지
             else:
                 st.sidebar.caption("⚠️ mapping.csv 파일이 없습니다. 수동으로 선택하세요.")
                 selected_ids = st.sidebar.multiselect("분석할 객체 번호 선택:", sorted(valid_ids))
@@ -145,10 +172,10 @@ if data_loaded:
                     objects_to_draw.append((sid, custom_name))
 
     # ---------------------------------------------------------
-    # 📌 수동 마커 기능
+    # 5. 수동 커스텀 마커
     # ---------------------------------------------------------
     st.sidebar.markdown("---")
-    st.sidebar.header("📌 4. 수동 커스텀 마커")
+    st.sidebar.header("📌 5. 수동 커스텀 마커")
     
     if custom_scenario_name not in st.session_state['custom_markers']:
         st.session_state['custom_markers'][custom_scenario_name] = []
@@ -191,19 +218,47 @@ if data_loaded:
 
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
+        # 💡 [신규 기능 1] 속도 툴팁에 위치(거리) 정보 병기
         if show_speed and ds_speed_col in df_ds.columns:
+            if ds_dist_col:
+                hovertemplate = '%{y:.1f} <br>📍 위치: %{customdata:.1f} m'
+                custom_data = df_ds[ds_dist_col]
+            else:
+                hovertemplate = '%{y:.1f}'
+                custom_data = None
+                
             fig.add_trace(go.Scatter(
-                x=df_ds['Time_s'], y=df_ds[ds_speed_col], mode='lines', name='차량 속도 (km/h)', line=dict(color='royalblue', width=2)
+                x=df_ds['Time_s'], y=df_ds[ds_speed_col], 
+                mode='lines', name='차량 속도 (km/h)', line=dict(color='royalblue', width=2),
+                customdata=custom_data, hovertemplate=hovertemplate
             ), secondary_y=False)
+
+        # 💡 [신규 기능 3] 가속도 그래프 렌더링
+        if show_accel:
+            # 1순위: 시뮬레이터 원본 가속도 데이터 탐색
+            accel_col = next((col for col in df_ds.columns if 'accel' in col.lower() and 'x' in col.lower()), None)
+            
+            if accel_col:
+                y_accel = df_ds[accel_col]
+            else:
+                # 2순위: 원본이 없으면 속도(km/h)를 m/s로 변환 후 시간을 미분하여 가속도 계산
+                y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
+                
+            fig.add_trace(go.Scatter(
+                x=df_ds['Time_s'], y=y_accel, 
+                mode='lines', name='가속도 (m/s²)', line=dict(color='darkmagenta', width=1.5, dash='dashdot')
+            ), secondary_y=True)
 
         if show_offset and ds_offset_col and ds_offset_col in df_ds.columns:
             fig.add_trace(go.Scatter(
-                x=df_ds['Time_s'], y=df_ds[ds_offset_col], mode='lines', name='조향 편차 (m)', line=dict(color='seagreen', width=2, dash='dot')
+                x=df_ds['Time_s'], y=df_ds[ds_offset_col], 
+                mode='lines', name='조향 편차 (m)', line=dict(color='seagreen', width=2, dash='dot')
             ), secondary_y=True)
 
         if show_saccade and sac_amp_col in df_sac.columns:
             fig.add_trace(go.Scatter(
-                x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동 각도 (deg)',
+                x=df_sac['Time_s'], y=df_sac[sac_amp_col], 
+                mode='lines', name='시선 이동 각도 (deg)',
                 fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5) 
             ), secondary_y=False)
 
@@ -216,10 +271,12 @@ if data_loaded:
                     df_blink['Time_s'] = (df_blink[blink_time_col] - sac_start_time) + time_offset
                     
                 fig.add_trace(go.Scatter(
-                    x=df_blink['Time_s'], y=[-5] * len(df_blink), mode='markers', name='눈 깜빡임 발생',
+                    x=df_blink['Time_s'], y=[-5] * len(df_blink), 
+                    mode='markers', name='눈 깜빡임 발생',
                     marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'
                 ), secondary_y=False)
 
+        # 차선 변경 하이라이트
         lane_change_count = 0
         if show_lane_change and ds_lane_col and ds_lane_col in df_ds.columns:
             raw_lane_changes = df_ds[df_ds[ds_lane_col].diff().abs() > 0]['Time_s'].tolist()
@@ -233,24 +290,46 @@ if data_loaded:
             for lc_time in filtered_lane_changes:
                 fig.add_vrect(x0=lc_time-3.0, x1=lc_time+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경", annotation_position="top left")
 
-        # ---------------------------------------------------------
-        # 💡 [핵심 연동] 체크박스가 켜진 객체들만 그래프에 그리기
-        # ---------------------------------------------------------
+        # 공사장 구간 배경 하이라이트 (거리 기반 자동 연산)
+        if caution_mode == "이동 거리(m) 기준" and caution_start_time is not None and ds_dist_col:
+            base_m = caution_dist_input
+            work_zones = [
+                {"name": "🟢 주의구간", "start": base_m, "end": base_m + 1500, "color": "lightgreen"},
+                {"name": "🟡 완화구간", "start": base_m + 1500, "end": base_m + 1720, "color": "orange"},
+                {"name": "🔴 완충구간", "start": base_m + 1720, "end": base_m + 2270, "color": "red"},
+                {"name": "⚫ 작업구역", "start": base_m + 2270, "end": base_m + 3070, "color": "black"}
+            ]
+            
+            for zone in work_zones:
+                start_df = df_ds[df_ds[ds_dist_col] >= zone["start"]]
+                end_df = df_ds[df_ds[ds_dist_col] >= zone["end"]]
+                
+                z_start_time = start_df.iloc[0]['Time_s'] if not start_df.empty else df_ds['Time_s'].max()
+                z_end_time = end_df.iloc[0]['Time_s'] if not end_df.empty else df_ds['Time_s'].max()
+                
+                if z_start_time < z_end_time:
+                    fig.add_vrect(
+                        x0=z_start_time, x1=z_end_time, 
+                        fillcolor=zone["color"], opacity=0.1, layer="below", line_width=1,
+                        annotation_text=zone["name"], annotation_position="top left", annotation_font=dict(size=12, color="gray")
+                    )
+
+        # 객체 인지 시점(Fixations) 마커 렌더링
         if df_fix is not None and objects_to_draw:
             for obj_id, obj_name in objects_to_draw:
-                # 선택한 객체를 처음 바라본 순간
                 first_occurrence = df_fix[df_fix[fix_id_col] == obj_id].iloc[0]
                 raw_t = first_occurrence[fix_time_col]
                 
                 is_ns_fix = raw_t > 1e12
-                if is_ns_fix:
-                    adj_time = ((raw_t - sac_start_time) / 1e9) + time_offset
-                else:
-                    adj_time = (raw_t - sac_start_time) + time_offset
+                adj_time = ((raw_t - sac_start_time) / 1e9) + time_offset if is_ns_fix else (raw_t - sac_start_time) + time_offset
+                
+                # 인지한 순간의 거리 정보 추출
+                closest_ds_row = df_ds.iloc[(df_ds['Time_s'] - adj_time).abs().argsort()[:1]]
+                dist_str = f"({closest_ds_row[ds_dist_col].values[0]:.1f}m)" if ds_dist_col and not closest_ds_row.empty else ""
                 
                 fig.add_vline(
                     x=adj_time, line_width=2, line_dash="dash", line_color="red",
-                    annotation_text=f"🎯 {obj_name}", annotation_position="bottom right",
+                    annotation_text=f"🎯 {obj_name} 인지 {dist_str}", annotation_position="bottom right",
                     annotation_font=dict(color="red", size=14, family="Arial Black")
                 )
 
@@ -268,17 +347,24 @@ if data_loaded:
         )
         
         fig.update_yaxes(title_text="속도 (km/h) / 시야각 (deg)", secondary_y=False)
-        fig.update_yaxes(title_text="조향 편차 (m)", secondary_y=True, showgrid=False)
+        fig.update_yaxes(title_text="가속도 & 조향 편차", secondary_y=True, showgrid=False)
 
         st.plotly_chart(fig, use_container_width=True)
 
+        # ---------------------------------------------------------
+        # 💡 [신규 기능 2] 통계 요약에 눈 깜빡임 횟수 추가 (5열 확장)
+        # ---------------------------------------------------------
         st.markdown("---")
         st.subheader(f"💡 '{custom_scenario_name}' 요약 통계")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        total_blinks = len(df_blink) if df_blink is not None else 0
+        max_offset = round(df_ds[ds_offset_col].abs().max(), 2) if ds_offset_col and ds_offset_col in df_ds.columns else 0
+        
         col1.metric("총 주행 시간", f"{round(df_ds['Time_s'].max(), 1)} 초")
         col2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
-        max_offset = round(df_ds[ds_offset_col].abs().max(), 2) if ds_offset_col and ds_offset_col in df_ds.columns else 0
         col3.metric("최대 조향 이탈", f"{max_offset} m")
-        col4.metric("차선 변경 횟수", f"{lane_change_count} 회")
+        col4.metric("👀 총 눈 깜빡임", f"{total_blinks} 회")
+        col5.metric("차선 변경 횟수", f"{lane_change_count} 회")
     else:
         st.error("⚠️ 데이터 구조(컬럼명)를 인식할 수 없습니다. 원본 파일 형식을 확인해주세요.")
