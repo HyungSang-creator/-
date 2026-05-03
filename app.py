@@ -79,7 +79,6 @@ else:
 # 2. 사이드바: 분석 옵션 및 레이어
 # ---------------------------------------------------------
 if data_loaded:
-    # 💡 [수정] 차트 제목 변경 입력창 삭제 및 폴더/파일명 자동 반영
     if data_mode == "💾 서버에 내장된 시나리오 불러오기":
         custom_scenario_name = selected_folder
     else:
@@ -91,7 +90,6 @@ if data_loaded:
     show_offset = st.sidebar.checkbox("↔️ 조향 편차 (차로 이탈 정도)", value=True)
     show_saccade = st.sidebar.checkbox("👁️ 시선 이동 각도 (채워진 그래프)", value=True)
     show_blink = st.sidebar.checkbox("😌 눈 깜빡임 (하단 마커)", value=True)
-    # 💡 [용어 변경] 차선 변경 -> 차로 변경
     show_lane_change = st.sidebar.checkbox("🚧 차로 변경 궤적 하이라이트", value=True)
     time_offset = st.sidebar.slider("아이트래커 시간 오차 보정 (초)", -10.0, 10.0, 0.0, 0.1)
 
@@ -230,7 +228,6 @@ if data_loaded:
 
     if show_lane_change and lane_change_count > 0:
         for lc in filtered_lane_changes:
-            # 💡 [용어 변경] 차선 변경 -> 차로 변경
             fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차로 변경")
 
     if show_zones and ds_dist_col:
@@ -308,7 +305,6 @@ if data_loaded:
     c2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
     c3.metric("최대 조향 이탈", f"{round(df_ds[ds_offset_col].abs().max(), 2)} m" if ds_offset_col else "0 m")
     c4.metric("👀 총 눈 깜빡임", f"{len(df_blink) if df_blink is not None else 0} 회")
-    # 💡 [용어 변경] 차선 -> 차로
     c5.metric("차로 변경 횟수", f"{lane_change_count} 회")
     
     if humanoid_gaze_stats:
@@ -322,7 +318,6 @@ if data_loaded:
         st.markdown(gaze_html, unsafe_allow_html=True)
 
     if lane_change_count > 0 and ds_dist_col:
-        # 💡 [용어 변경]
         st.markdown("#### 🚧 첫 번째 차로 변경 상세 분석 (기준: 변경 시점 ±3초)")
         first_lc = filtered_lane_changes[0]
         st_t, ed_t = max(0, first_lc - 3.0), first_lc + 3.0
@@ -341,7 +336,6 @@ if data_loaded:
             margin_time = taper_time_stat - first_lc
             margin_dist = max(0.0, 2500.0 - lc_exact_dist)
             
-            # 💡 [용어 변경]
             margin_html = f'''
             <div style="display: flex; justify-content: space-between; text-align: center; background-color: #f4f6f9; padding: 20px; border-radius: 10px; border: 1px solid #d3d9e2; margin-top: 10px;">
                 <div style="flex: 1; padding: 0 10px;">
@@ -364,7 +358,6 @@ if data_loaded:
                     break
                     
         if humanoid_id is not None:
-            # 💡 [용어 변경]
             st.markdown("#### ⏱️ 인지 반응 분석 (휴머노이드 인지 ➔ 차로 변경)")
             raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
             ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
@@ -381,11 +374,9 @@ if data_loaded:
                     view_dist = max(0, actual_h_pos - dist_ta)
                     view_html = f'<div style="flex: 1; padding: 0 10px; border-right: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">최초 인지 시점의 전방 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #c0392b;">{view_dist:.1f} m</p></div>'
                 
-                # 💡 [용어 변경]
                 react_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #fff9e6; padding: 20px; border-radius: 10px; border: 1px solid #fce79a; margin-top: 10px;">{view_html}<div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차로 변경 소요 시간</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_time:.2f} 초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차로 변경 이동 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_dist:.2f} m</p></div></div>'
                 st.markdown(react_html, unsafe_allow_html=True)
             else:
-                # 💡 [용어 변경]
                 st.warning("⚠️ 차로 변경이 휴머노이드 인지보다 먼저 발생했습니다. (반응 속도 역전)")
 
     # ---------------------------------------------------------
@@ -418,21 +409,27 @@ if data_loaded:
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("#### 📥 추출된 주행 파라미터")
-            # 💡 [용어 변경]
             v_val = st.number_input("차로 변경 시점 속도 V (km/h)", value=float(auto_v), format="%.2f")
             d_val = st.number_input("테이퍼 시점과의 거리 D (m)", value=float(auto_d), format="%.2f")
             l_val = st.number_input("구간 길이 L (m) [t_a ~ t_b 이동거리]", value=float(auto_l), format="%.2f")
             ta_val = st.number_input("휴머노이드 인지 시점 t_a (초)", value=float(auto_ta), format="%.2f")
-            # 💡 [용어 변경]
             tb_val = st.number_input("차로 변경 시작 시점 t_b (초)", value=float(auto_tb), format="%.2f")
+            
         with c2:
-            st.markdown("#### 📊 평가 결과")
-            ssd_val = (v_val**2) / (254 * (0.8 + 0.0)) + 2.5 * (v_val / 3.6)
+            st.markdown("#### 📊 평가 결과 및 계산 과정")
+            f_val, s_val, tr_val = 0.8, 0.0, 2.5
+            ssd_val = (v_val**2) / (254 * (f_val + s_val)) + tr_val * (v_val / 3.6)
+            
             st.markdown("**1. 안전정지거리 (SSD)**")
+            st.latex(r"SSD = \frac{V^2}{254 \times (f + s)} + t_r \times \frac{V}{3.6}")
+            st.latex(fr"= \frac{{{v_val:.1f}^2}}{{254 \times ({f_val} + {s_val})}} + {tr_val} \times \frac{{{v_val:.1f}}}{{3.6}}")
             st.info(f"계산 결과: **{ssd_val:.2f} m** ➔ **{'🟢 Safety' if ssd_val <= d_val else '🔴 Danger'}**")
+            
             st.markdown("**2. 구간 속도**")
+            st.latex(r"구간 속도 = \frac{L}{t_b - t_a} \times 3.6")
             if tb_val > ta_val:
                 sms_val = (l_val / (tb_val - ta_val)) * 3.6
+                st.latex(fr"= \frac{{{l_val:.1f}}}{{{tb_val:.2f} - {ta_val:.2f}}} \times 3.6")
                 st.info(f"계산 결과: **{sms_val:.2f} km/h** ➔ **{'🟢 Safety' if sms_val <= 80 else '🔴 Danger'}**")
             else:
-                st.error("시간 오류: 인지 시점(t_a)이 변경 시점(t_b)보다 빠를 수 없습니다.")
+                st.error("시간 오류: 인지 시점(t_a)이 차로 변경 시작 시점(t_b)보다 빠를 수 없습니다.")
