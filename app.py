@@ -426,6 +426,8 @@ if data_loaded:
             st.info(f"계산 결과: **{ssd_val:.2f} m** ➔ **{'🟢 Safety' if ssd_val <= d_val else '🔴 Danger'}**")
             
             st.markdown("**2. 구간 속도**")
+            # 💡 [신규] 구간 속도 설명 추가
+            st.caption("💡 **참고:** 구간 속도는 **휴머노이드 최초 인지 시점($t_a$)**부터 **차로 변경 시작 시점($t_b$)**까지 이동한 구간의 평균 속도입니다.")
             st.latex(r"구간 속도 = \frac{L}{t_b - t_a} \times 3.6")
             if tb_val > ta_val:
                 sms_val = (l_val / (tb_val - ta_val)) * 3.6
