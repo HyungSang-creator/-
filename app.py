@@ -41,6 +41,7 @@ st.sidebar.markdown("---")
 
 df_ds, df_sac, df_blink, df_fix, df_map = None, None, None, None, None
 data_loaded = False
+current_ds_filename = ""
 
 if data_mode == "💾 서버에 내장된 시나리오 불러오기":
     folder_options = [item for item in os.listdir('.') if os.path.isdir(item) and not item.startswith('.') and not item == '__pycache__']
@@ -54,6 +55,7 @@ if data_mode == "💾 서버에 내장된 시나리오 불러오기":
             df_blink = pd.read_csv(blink_path) if blink_path else None
             df_fix = pd.read_csv(fix_path) if fix_path else None
             df_map = pd.read_csv(map_path) if map_path else None
+            current_ds_filename = os.path.basename(ds_path)
             data_loaded = True
         else:
             st.sidebar.error("⚠️ 필수 데이터를 찾지 못했습니다.")
@@ -69,10 +71,11 @@ else:
         df_blink = pd.read_csv(blink_file) if blink_file else None
         df_fix = pd.read_csv(fix_file) if fix_file else None
         df_map = pd.read_csv(map_file) if map_file else None
+        current_ds_filename = ds_file.name
         data_loaded = True
 
 # ---------------------------------------------------------
-# 2. 사이드바: 분석 옵션 및 레이어
+# 2. 사이드바: 분석 옵션 및 자동 시나리오 세팅
 # ---------------------------------------------------------
 if data_loaded:
     custom_scenario_name = st.sidebar.text_input("📝 차트 제목 변경:", value="새로운 분석 시나리오")
@@ -88,16 +91,24 @@ if data_loaded:
 
     ds_dist_col = next((col for col in df_ds.columns if 'distance' in col.lower() or 'dist' in col.lower() or 'mileage' in col.lower()), None)
     
+    # 💡 [신규] 파일명 기반 시나리오 번호 & 휴머노이드 위치 자동 세팅
     st.sidebar.markdown("---")
-    st.sidebar.header("🚨 3. 주의 구간 (이벤트 존) 설정")
-    caution_mode = st.sidebar.radio("주의 구간 시작 기준", ["사용 안 함", "특정 시간(초) 기준", "이동 거리(m) 기준"])
-    caution_start_time = None
-    if caution_mode == "이동 거리(m) 기준" and ds_dist_col:
-        caution_dist_input = st.sidebar.number_input(f"🚨 주의 구간 시작 거리 (m)", min_value=0.0, max_value=10000.0, value=500.0)
-        over_dist_df = df_ds[df_ds[ds_dist_col] >= caution_dist_input]
-        temp_time_col = 'time' if 'time' in df_ds.columns else 'timestamp'
-        if not over_dist_df.empty:
-            caution_start_time = over_dist_df[temp_time_col].iloc[0] - df_ds[temp_time_col].min()
+    st.sidebar.header("🚨 3. 시나리오 구간 자동 감지")
+    
+    scenario_id = current_ds_filename.split('_')[0] if '_' in current_ds_filename else current_ds_filename[0]
+    if scenario_id not in ['0', '1', '2', '3']:
+        scenario_id = '1' # 알 수 없는 파일일 경우 기본값
+        
+    humanoid_positions = {'0': None, '1': 1000.0, '2': 1600.0, '3': 2200.0}
+    actual_h_pos = humanoid_positions.get(scenario_id)
+    
+    st.sidebar.info(f"✅ 감지된 시나리오: **S{scenario_id}**")
+    if actual_h_pos:
+        st.sidebar.success(f"🤖 휴머노이드 물리적 위치: **{actual_h_pos}m**")
+    else:
+        st.sidebar.warning("🤖 휴머노이드: **없음 (S0)**")
+        
+    st.sidebar.caption("🗺️ 공사 구간: 1000m(주의) ➔ 2500m(완화) ➔ 2720m(작업) ➔ 3270m(종결)")
 
     # ---------------------------------------------------------
     # 4. 객체 감지 및 표시 (토글)
@@ -211,28 +222,29 @@ if data_loaded:
         for lc in filtered_lane_changes:
             fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경")
 
-    if caution_mode == "이동 거리(m) 기준" and caution_start_time is not None and ds_dist_col:
-        base_m = caution_dist_input
+    # 💡 [신규] 명세해주신 고정 구간(1000~3300m)을 기반으로 백그라운드 색칠
+    if ds_dist_col:
         work_zones = [
-            {"name": "🟢 주의구간", "start": base_m, "end": base_m + 1500, "color": "lightgreen"},
-            {"name": "🟡 완화구간", "start": base_m + 1500, "end": base_m + 1720, "color": "orange"},
-            {"name": "🔴 완충구간", "start": base_m + 1720, "end": base_m + 2270, "color": "red"},
-            {"name": "⚫ 작업구역", "start": base_m + 2270, "end": base_m + 3070, "color": "black"}
+            {"name": "🟢 주의구간", "start": 1000.0, "end": 2500.0, "color": "lightgreen"},
+            {"name": "🟡 완화구간", "start": 2500.0, "end": 2720.0, "color": "orange"},
+            {"name": "🔴 작업구간", "start": 2720.0, "end": 3270.0, "color": "red"},
+            {"name": "⚫ 종결구간", "start": 3270.0, "end": 3300.0, "color": "gray"}
         ]
-        
         for zone in work_zones:
             start_df = df_ds[df_ds[ds_dist_col] >= zone["start"]]
             end_df = df_ds[df_ds[ds_dist_col] >= zone["end"]]
-            
-            z_start_time = start_df.iloc[0]['Time_s'] if not start_df.empty else df_ds['Time_s'].max()
-            z_end_time = end_df.iloc[0]['Time_s'] if not end_df.empty else df_ds['Time_s'].max()
-            
-            if z_start_time < z_end_time:
-                fig.add_vrect(
-                    x0=z_start_time, x1=z_end_time, 
-                    fillcolor=zone["color"], opacity=0.1, layer="below", line_width=1,
-                    annotation_text=zone["name"], annotation_position="top left", annotation_font=dict(size=12, color="gray")
-                )
+            if not start_df.empty:
+                z_start_time = start_df.iloc[0]['Time_s']
+                z_end_time = end_df.iloc[0]['Time_s'] if not end_df.empty else df_ds['Time_s'].max()
+                if z_start_time < z_end_time:
+                    fig.add_vrect(x0=z_start_time, x1=z_end_time, fillcolor=zone["color"], opacity=0.1, layer="below", line_width=1, annotation_text=zone["name"], annotation_position="top left", annotation_font=dict(size=12, color="gray"))
+
+    # 💡 [신규] 휴머노이드 물리적 고정 위치를 눈에 띄는 실선으로 표시 (차량이 이 지점을 통과하는 순간)
+    if actual_h_pos is not None and ds_dist_col:
+        h_df = df_ds[df_ds[ds_dist_col] >= actual_h_pos]
+        if not h_df.empty:
+            h_pass_time = h_df.iloc[0]['Time_s']
+            fig.add_vline(x=h_pass_time, line_width=2.5, line_dash="solid", line_color="purple", annotation_text=f"🤖 휴머노이드 위치 ({actual_h_pos}m)", annotation_position="top left", annotation_font=dict(color="purple", size=13, family="Arial Black"))
 
     if df_fix is not None and objects_to_draw:
         max_y = df_ds[ds_speed_col].max() if ds_speed_col in df_ds.columns else 100
@@ -243,7 +255,6 @@ if data_loaded:
             
             close_row = df_ds.iloc[(df_ds['Time_s'] - adj_time).abs().argsort()[:1]]
             dist_txt = f"({close_row[ds_dist_col].values[0]:.1f}m 지점)" if ds_dist_col and not close_row.empty else ""
-            
             line_color = 'red' if "휴머노이드" in obj_name else 'royalblue'
             
             fig.add_trace(go.Scatter(
@@ -289,7 +300,6 @@ if data_loaded:
         lc_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{st_t:.1f}초 / {st_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{ed_t:.1f}초 / {ed_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_t - st_t:.1f}초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_dist - st_dist:.1f}m</p></div></div>'
         st.markdown(lc_html, unsafe_allow_html=True)
         
-        # 💡 [신규 업데이트] 인지 반응 분석 (인지 ➔ 차선 변경 시간/거리)
         humanoid_id = None
         if df_fix is not None:
             for oid, oname in objects_to_draw:
@@ -309,7 +319,13 @@ if data_loaded:
                 react_time = tb - ta
                 react_dist = abs(dist_tb - dist_ta)
                 
-                react_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #fff9e6; padding: 20px; border-radius: 10px; border: 1px solid #fce79a; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차선 변경 소요 시간</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_time:.2f} 초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차선 변경 이동 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_dist:.2f} m</p></div></div>'
+                # 💡 [신규] 알아낸 물리적 위치(actual_h_pos)를 바탕으로 '가시거리(전방 몇 m에서 봤는가)' 도출!
+                view_html = ""
+                if actual_h_pos is not None:
+                    view_dist = max(0, actual_h_pos - dist_ta)
+                    view_html = f'<div style="flex: 1; padding: 0 10px; border-right: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">최초 인지 시점의 전방 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #c0392b;">{view_dist:.1f} m</p></div>'
+                
+                react_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #fff9e6; padding: 20px; border-radius: 10px; border: 1px solid #fce79a; margin-top: 10px;">{view_html}<div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차선 변경 소요 시간</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_time:.2f} 초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차선 변경 이동 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_dist:.2f} m</p></div></div>'
                 st.markdown(react_html, unsafe_allow_html=True)
             else:
                 st.warning("⚠️ 차선 변경이 휴머노이드 인지보다 먼저 발생했습니다. (반응 속도 역전)")
@@ -322,7 +338,6 @@ if data_loaded:
     with st.expander("🛠️ 교통 안전성 평가 데이터 및 결과 보기", expanded=True):
         auto_ta, auto_tb, auto_v, auto_l = 0.0, 6.0, 90.0, 150.0
         
-        # SSD 자동 계산용 타겟을 '휴머노이드'로 정확히 타겟팅
         target_id_ssd = None
         if objects_to_draw:
             for oid, oname in objects_to_draw:
