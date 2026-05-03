@@ -100,7 +100,7 @@ if data_loaded:
             caution_start_time = over_dist_df[temp_time_col].iloc[0] - df_ds[temp_time_col].min()
 
     # ---------------------------------------------------------
-    # 💡 [신규] 객체 토글 렌더링 & 휴머노이드 응시 시간 백그라운드 계산
+    # 4. 객체 감지 및 표시 (토글)
     # ---------------------------------------------------------
     objects_to_draw = []
     humanoid_gaze_stats = []
@@ -123,22 +123,23 @@ if data_loaded:
                     if obj_id in mapping_dict:
                         obj_name = mapping_dict[obj_id]
                         
-                        # 1) 휴머노이드 누적 시간 연산 (화면 표시 여부 무관하게 백그라운드 추출)
+                        # 💡 [버그 수정] 응시 시간 계산 로직 (ms 단위를 정확히 초 단위로 변환)
                         if "휴머노이드" in obj_name:
                             fix_rows = df_fix[df_fix[fix_id_col] == obj_id]
                             if not fix_rows.empty:
                                 raw_dur = 0.0
                                 if dur_col:
-                                    raw_val = fix_rows[dur_col].iloc[0]
-                                    raw_dur = raw_val / 1000.0 if raw_val > 1000 else raw_val
+                                    raw_val = fix_rows[dur_col].sum()
+                                    # 10보다 크면 ms로 간주하고 무조건 1000으로 나누어 초 단위로 변경
+                                    raw_dur = raw_val / 1000.0 if raw_val > 10 else raw_val
                                 elif end_col:
-                                    diff = fix_rows[end_col].iloc[0] - fix_rows[fix_time_col].iloc[0]
+                                    diff = fix_rows[end_col].max() - fix_rows[fix_time_col].min()
                                     raw_dur = diff / 1e9 if diff > 1e12 else diff
                                 
                                 order = 1 if obj_name == "휴머노이드" else (int(obj_name.split("-")[1]) + 1 if "-" in obj_name else 99)
                                 humanoid_gaze_stats.append((order, raw_dur))
                         
-                        # 2) 토글 화면 렌더링 ("-"가 포함된 2차, 3차 표지판/휴머노이드는 숨김)
+                        # "-"가 포함된 객체는 사이드바에 표시하지 않음
                         if "-" not in obj_name:
                             if st.sidebar.checkbox(f"🔴 {obj_name}", value=True):
                                 objects_to_draw.append((obj_id, obj_name))
@@ -195,7 +196,6 @@ if data_loaded:
             for lc in filtered_lane_changes:
                 fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경")
 
-    # 💡 [신규] 객체 마커 그리기 (휴머노이드 영구 표시 vs 표지판 마우스 Hover 분기)
     if df_fix is not None and objects_to_draw:
         max_y = df_ds[ds_speed_col].max() if ds_speed_col in df_ds.columns else 100
         for obj_id, obj_name in objects_to_draw:
@@ -207,11 +207,9 @@ if data_loaded:
             dist_txt = f"({close_row[ds_dist_col].values[0]:.1f}m 지점)" if ds_dist_col and not close_row.empty else ""
             
             if "휴머노이드" in obj_name:
-                # 휴머노이드는 항상 눈에 띄게 (영구 글씨)
                 html_dist = f"<br><span style='font-size:11px;'>{dist_txt}</span>"
                 fig.add_vline(x=adj_time, line_width=2, line_dash="dash", line_color="red", annotation_text=f"🎯 {obj_name} 인지 {html_dist}", annotation_position="bottom right", annotation_font=dict(color="red", size=14, family="Arial Black"))
             else:
-                # 일반 표지판은 마우스를 올렸을 때만(Hover) 보이게 점선 처리
                 fig.add_trace(go.Scatter(
                     x=[adj_time, adj_time], y=[0, max_y], mode='lines', line=dict(color='royalblue', width=2, dash='dot'),
                     name=obj_name, hovertemplate=f"<b>🎯 {obj_name}</b><br>인지 위치: {dist_txt}<extra></extra>", showlegend=False
@@ -234,42 +232,27 @@ if data_loaded:
     c4.metric("👀 총 눈 깜빡임", f"{len(df_blink) if df_blink is not None else 0} 회")
     c5.metric("차선 변경 횟수", f"{lane_change_count} 회")
     
-    # 💡 [신규] 휴머노이드 누적 주시 시간 시각화 (N차 주시 데이터 병합)
+    # 💡 [버그 수정] HTML 블록을 띄어쓰기 없이 한 줄로 처리하여 Markdown 파싱 에러 방지
     if humanoid_gaze_stats:
         st.markdown("#### 👀 휴머노이드 누적 주시 시간 분석 (다중 인지 포함)")
         gaze_html = '<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; margin-bottom: 20px;">'
         total_dur = 0.0
         for order, dur in humanoid_gaze_stats:
             total_dur += dur
-            gaze_html += f"""
-            <div style="background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px; border: 1px solid #dcdede;">
-                <p style="font-size: 13px; margin: 0; color: #555;">{order}차 주시</p>
-                <p style="font-size: 16px; font-weight: bold; margin: 0; color: #e74c3c;">{dur:.2f}초</p>
-            </div>
-            """
-        gaze_html += f"""
-            <div style="background-color: #ffeaea; padding: 12px 18px; border-radius: 8px; border: 1.5px solid #ffb3b3;">
-                <p style="font-size: 13px; margin: 0; color: #c0392b; font-weight: bold;">총 누적 주시 시간</p>
-                <p style="font-size: 18px; font-weight: 900; margin: 0; color: #c0392b;">{total_dur:.2f}초</p>
-            </div>
-        </div>
-        """
+            gaze_html += f'<div style="background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px; border: 1px solid #dcdede;"><p style="font-size: 13px; margin: 0; color: #555;">{order}차 주시</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #e74c3c;">{dur:.2f}초</p></div>'
+        gaze_html += f'<div style="background-color: #ffeaea; padding: 12px 18px; border-radius: 8px; border: 1.5px solid #ffb3b3;"><p style="font-size: 13px; margin: 0; color: #c0392b; font-weight: bold;">총 누적 주시 시간</p><p style="font-size: 18px; font-weight: 900; margin: 0; color: #c0392b;">{total_dur:.2f}초</p></div></div>'
         st.markdown(gaze_html, unsafe_allow_html=True)
 
+    # 💡 [버그 수정] 차선 변경 HTML도 띄어쓰기 없이 한 줄 처리
     if lane_change_count > 0 and ds_dist_col:
         st.markdown("#### 🚧 첫 번째 차선 변경 상세 분석 (기준: 변경 시점 ±3초)")
         first_lc = filtered_lane_changes[0]
         st_t, ed_t = max(0, first_lc - 3.0), first_lc + 3.0
         st_dist = df_ds.iloc[(df_ds['Time_s'] - st_t).abs().argsort()[:1]][ds_dist_col].values[0]
         ed_dist = df_ds.iloc[(df_ds['Time_s'] - ed_t).abs().argsort()[:1]][ds_dist_col].values[0]
-        st.markdown(f"""
-        <div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;">
-            <div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{st_t:.1f}초 / {st_dist:.1f}m</p></div>
-            <div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{ed_t:.1f}초 / {ed_dist:.1f}m</p></div>
-            <div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_t - st_t:.1f}초</p></div>
-            <div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_dist - st_dist:.1f}m</p></div>
-        </div>
-        """, unsafe_allow_html=True)
+        
+        lc_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{st_t:.1f}초 / {st_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{ed_t:.1f}초 / {ed_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_t - st_t:.1f}초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_dist - st_dist:.1f}m</p></div></div>'
+        st.markdown(lc_html, unsafe_allow_html=True)
 
     # ---------------------------------------------------------
     # 5. SSD & 구간 속도 평가
