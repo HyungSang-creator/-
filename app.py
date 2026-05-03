@@ -123,14 +123,12 @@ if data_loaded:
                     if obj_id in mapping_dict:
                         obj_name = mapping_dict[obj_id]
                         
-                        # 💡 [버그 수정] 응시 시간 계산 로직 (ms 단위를 정확히 초 단위로 변환)
                         if "휴머노이드" in obj_name:
                             fix_rows = df_fix[df_fix[fix_id_col] == obj_id]
                             if not fix_rows.empty:
                                 raw_dur = 0.0
                                 if dur_col:
                                     raw_val = fix_rows[dur_col].sum()
-                                    # 10보다 크면 ms로 간주하고 무조건 1000으로 나누어 초 단위로 변경
                                     raw_dur = raw_val / 1000.0 if raw_val > 10 else raw_val
                                 elif end_col:
                                     diff = fix_rows[end_col].max() - fix_rows[fix_time_col].min()
@@ -139,7 +137,6 @@ if data_loaded:
                                 order = 1 if obj_name == "휴머노이드" else (int(obj_name.split("-")[1]) + 1 if "-" in obj_name else 99)
                                 humanoid_gaze_stats.append((order, raw_dur))
                         
-                        # "-"가 포함된 객체는 사이드바에 표시하지 않음
                         if "-" not in obj_name:
                             if st.sidebar.checkbox(f"🔴 {obj_name}", value=True):
                                 objects_to_draw.append((obj_id, obj_name))
@@ -151,7 +148,9 @@ if data_loaded:
                     objects_to_draw.append((sid, custom_name))
             humanoid_gaze_stats.sort(key=lambda x: x[0])
 
+    # ---------------------------------------------------------
     # 메인 화면 그래프 렌더링 세팅
+    # ---------------------------------------------------------
     ds_time_col = 'time' if 'time' in df_ds.columns else 'timestamp'
     ds_speed_col = 'speedInKmPerHour' if 'speedInKmPerHour' in df_ds.columns else ('speed' if 'speed' in df_ds.columns else 'Velocity')
     ds_lane_col = 'laneNumber' if 'laneNumber' in df_ds.columns else ('Lane_ID' if 'Lane_ID' in df_ds.columns else None)
@@ -165,6 +164,29 @@ if data_loaded:
     is_ns = df_sac[sac_time_col].max() > 1e12
     df_sac['Time_s'] = ((df_sac[sac_time_col] - sac_start_time) / 1e9) + time_offset if is_ns else (df_sac[sac_time_col] - sac_start_time) + time_offset
 
+    # 💡 [버그 수정] 소수점 노이즈 무시 (round 처리) 및 쿨타임 증가
+    lane_change_count = 0
+    filtered_lane_changes = []
+    
+    if ds_lane_col in df_ds.columns:
+        df_ds.loc[df_ds[ds_lane_col] >= 3, ds_lane_col] = 2
+        df_ds.loc[df_ds[ds_lane_col] <= 0, ds_lane_col] = 1
+        
+        # round()를 추가하여 소수점 아래 미세 떨림으로 인한 오작동 방지
+        raw_lane_changes = df_ds[df_ds[ds_lane_col].round().diff().abs() >= 1]['Time_s'].tolist()
+        last_lc_time = -999.0
+        
+        for lc_time in raw_lane_changes:
+            # 10초 이내의 연속 변경은 동일 차선 변경으로 간주하여 무시
+            if lc_time - last_lc_time > 10.0:
+                filtered_lane_changes.append(lc_time)
+                last_lc_time = lc_time
+                
+        lane_change_count = len(filtered_lane_changes)
+
+    # ---------------------------------------------------------
+    # 차트 그리기
+    # ---------------------------------------------------------
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     if show_speed and ds_speed_col in df_ds.columns:
@@ -182,20 +204,40 @@ if data_loaded:
     if show_saccade and sac_amp_col in df_sac.columns:
         fig.add_trace(go.Scatter(x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동', fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5)), secondary_y=False)
 
-    lane_change_count = 0
-    filtered_lane_changes = []
-    if ds_lane_col in df_ds.columns:
-        raw_lane_changes = df_ds[df_ds[ds_lane_col].diff().abs() > 0]['Time_s'].tolist()
-        last_lc_time = -999.0
-        for lc_time in raw_lane_changes:
-            if lc_time - last_lc_time > 5.0:
-                filtered_lane_changes.append(lc_time)
-                last_lc_time = lc_time
-        lane_change_count = len(filtered_lane_changes)
-        if show_lane_change:
-            for lc in filtered_lane_changes:
-                fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경")
+    if show_blink and df_blink is not None:
+        blink_time_col = 'start timestamp [ns]' if 'start timestamp [ns]' in df_blink.columns else 'start timestamp'
+        if blink_time_col in df_blink.columns:
+            df_blink['Time_s'] = ((df_blink[blink_time_col] - sac_start_time) / 1e9) + time_offset if is_ns else (df_blink[blink_time_col] - sac_start_time) + time_offset
+            fig.add_trace(go.Scatter(x=df_blink['Time_s'], y=[-5] * len(df_blink), mode='markers', name='눈 깜빡임 발생', marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'), secondary_y=False)
 
+    if show_lane_change and lane_change_count > 0:
+        for lc in filtered_lane_changes:
+            fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차선 변경")
+
+    if caution_mode == "이동 거리(m) 기준" and caution_start_time is not None and ds_dist_col:
+        base_m = caution_dist_input
+        work_zones = [
+            {"name": "🟢 주의구간", "start": base_m, "end": base_m + 1500, "color": "lightgreen"},
+            {"name": "🟡 완화구간", "start": base_m + 1500, "end": base_m + 1720, "color": "orange"},
+            {"name": "🔴 완충구간", "start": base_m + 1720, "end": base_m + 2270, "color": "red"},
+            {"name": "⚫ 작업구역", "start": base_m + 2270, "end": base_m + 3070, "color": "black"}
+        ]
+        
+        for zone in work_zones:
+            start_df = df_ds[df_ds[ds_dist_col] >= zone["start"]]
+            end_df = df_ds[df_ds[ds_dist_col] >= zone["end"]]
+            
+            z_start_time = start_df.iloc[0]['Time_s'] if not start_df.empty else df_ds['Time_s'].max()
+            z_end_time = end_df.iloc[0]['Time_s'] if not end_df.empty else df_ds['Time_s'].max()
+            
+            if z_start_time < z_end_time:
+                fig.add_vrect(
+                    x0=z_start_time, x1=z_end_time, 
+                    fillcolor=zone["color"], opacity=0.1, layer="below", line_width=1,
+                    annotation_text=zone["name"], annotation_position="top left", annotation_font=dict(size=12, color="gray")
+                )
+
+    # 💡 [핵심 반영] 휴머노이드 텍스트 숨기고 마우스 Hover 방식으로 통일
     if df_fix is not None and objects_to_draw:
         max_y = df_ds[ds_speed_col].max() if ds_speed_col in df_ds.columns else 100
         for obj_id, obj_name in objects_to_draw:
@@ -206,14 +248,14 @@ if data_loaded:
             close_row = df_ds.iloc[(df_ds['Time_s'] - adj_time).abs().argsort()[:1]]
             dist_txt = f"({close_row[ds_dist_col].values[0]:.1f}m 지점)" if ds_dist_col and not close_row.empty else ""
             
-            if "휴머노이드" in obj_name:
-                html_dist = f"<br><span style='font-size:11px;'>{dist_txt}</span>"
-                fig.add_vline(x=adj_time, line_width=2, line_dash="dash", line_color="red", annotation_text=f"🎯 {obj_name} 인지 {html_dist}", annotation_position="bottom right", annotation_font=dict(color="red", size=14, family="Arial Black"))
-            else:
-                fig.add_trace(go.Scatter(
-                    x=[adj_time, adj_time], y=[0, max_y], mode='lines', line=dict(color='royalblue', width=2, dash='dot'),
-                    name=obj_name, hovertemplate=f"<b>🎯 {obj_name}</b><br>인지 위치: {dist_txt}<extra></extra>", showlegend=False
-                ), secondary_y=False)
+            # 구분을 위해 색상만 다르게 처리 (휴머노이드=빨강, 표지판=파랑)
+            line_color = 'red' if "휴머노이드" in obj_name else 'royalblue'
+            
+            fig.add_trace(go.Scatter(
+                x=[adj_time, adj_time], y=[0, max_y], mode='lines', 
+                line=dict(color=line_color, width=2, dash='dash' if "휴머노이드" in obj_name else 'dot'),
+                name=obj_name, hovertemplate=f"<b>🎯 {obj_name}</b><br>인지 위치: {dist_txt}<extra></extra>", showlegend=False
+            ), secondary_y=False)
 
     fig.update_layout(title=f"[{custom_scenario_name}] 실시간 다중 레이어 분석 차트", xaxis_title="주행 시간 (초)", height=650, hovermode="x unified", legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor='rgba(255, 255, 255, 0.7)'))
     fig.update_yaxes(title_text="속도 (km/h) / 시야각 (deg)", secondary_y=False)
@@ -232,7 +274,6 @@ if data_loaded:
     c4.metric("👀 총 눈 깜빡임", f"{len(df_blink) if df_blink is not None else 0} 회")
     c5.metric("차선 변경 횟수", f"{lane_change_count} 회")
     
-    # 💡 [버그 수정] HTML 블록을 띄어쓰기 없이 한 줄로 처리하여 Markdown 파싱 에러 방지
     if humanoid_gaze_stats:
         st.markdown("#### 👀 휴머노이드 누적 주시 시간 분석 (다중 인지 포함)")
         gaze_html = '<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; margin-bottom: 20px;">'
@@ -243,7 +284,6 @@ if data_loaded:
         gaze_html += f'<div style="background-color: #ffeaea; padding: 12px 18px; border-radius: 8px; border: 1.5px solid #ffb3b3;"><p style="font-size: 13px; margin: 0; color: #c0392b; font-weight: bold;">총 누적 주시 시간</p><p style="font-size: 18px; font-weight: 900; margin: 0; color: #c0392b;">{total_dur:.2f}초</p></div></div>'
         st.markdown(gaze_html, unsafe_allow_html=True)
 
-    # 💡 [버그 수정] 차선 변경 HTML도 띄어쓰기 없이 한 줄 처리
     if lane_change_count > 0 and ds_dist_col:
         st.markdown("#### 🚧 첫 번째 차선 변경 상세 분석 (기준: 변경 시점 ±3초)")
         first_lc = filtered_lane_changes[0]
