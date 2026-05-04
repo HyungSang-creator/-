@@ -386,7 +386,7 @@ if data_loaded:
                 st.warning("⚠️ 차로 변경이 휴머노이드 인지보다 먼저 발생했습니다. (반응 속도 역전)")
 
     # ---------------------------------------------------------
-    # 💡 [개편] 심층 주행 & 인지 부하 분석 (SSM & Workload)
+    # 💡 심층 주행 & 인지 부하 분석 (SSM & Workload)
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("🧠 심층 주행 & 인지 부하 분석 (SSM & Workload)")
@@ -394,7 +394,6 @@ if data_loaded:
     with st.expander("🛠️ 인지적 작업 부하 및 안정성 지표 상세 보기", expanded=True):
         col_w1, col_w2 = st.columns(2)
         
-        # 1. SDLP 및 Steering Entropy
         with col_w1:
             st.markdown("#### 1. 차로 유지 편차 (SDLP) 및 조향 엔트로피")
             st.caption("차량이 차로 중앙에서 좌우로 얼마나 비틀거렸는지, 핸들 조작이 얼마나 불규칙하고 급격했는지를 수치화하여 운전자의 당황(인지적 부하) 수준을 평가합니다.")
@@ -435,7 +434,6 @@ if data_loaded:
                 else:
                     st.warning("조향 데이터가 존재하지 않습니다.")
 
-            # Jerk
             st.markdown("#### 2. 가속도 변화율 (Jerk)")
             st.caption("가속도가 시간에 따라 얼마나 급격히 변했는지 분석하여, 놀람으로 인한 '급제동'이나 '급가속'이 발생한 횟수를 정량화합니다.")
             with st.container(border=True):
@@ -447,7 +445,6 @@ if data_loaded:
                 st.markdown(f"- **실제 대입 데이터:** 도출된 {len(jerk.dropna())}개의 저크 샘플 중, 임계치(2.0 $m/s^3$)를 초과한 조작의 비율 산출")
                 st.warning(f"**최대 저크 (Max Jerk):** {max_jerk:.2f} $m/s^3$\n\n**급조작(위험) 비율:** {harsh_ratio:.2f} %")
 
-        # 3. Gaze Entropy & TTC/SDI
         with col_w2:
             st.markdown("#### 3. 시선 분산도 (Gaze Entropy)")
             st.caption("운전자의 시선이 전방(도로)에 집중되었는지, 아니면 갑자기 등장한 로봇이나 주변 환경으로 인해 산만하게 흩어졌는지를 수학적으로 입증합니다.")
@@ -460,8 +457,14 @@ if data_loaded:
                     p_gaze = df_fix[fix_id_col].value_counts(normalize=True).values
                     p_gaze = p_gaze[p_gaze > 0]
                     gaze_entropy = -sum(p_gaze * np.log2(p_gaze))
-                    prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze])
-                    st.markdown(f"- **실제 대입 데이터:** 각 객체별 응시 확률 분포 $p_i$ = [{prob_str}]")
+                    
+                    # 💡 [UI 개선] 너무 많은 데이터가 배열에 찍히는 것을 방지 (Top 5만 보여주고 생략)
+                    if len(p_gaze) > 5:
+                        prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze[:5]]) + f" ... (외 {len(p_gaze)-5}개)"
+                    else:
+                        prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze])
+                        
+                    st.markdown(f"- **실제 대입 데이터:** 총 {len(p_gaze)}개 주시 타겟의 확률 분포 $p_i$ = [{prob_str}]")
                     st.info(f"**계산 결과 (SGE):** {gaze_entropy:.3f}")
                 else:
                     st.warning("시선 고정(Fixation) 데이터가 없습니다.")
@@ -474,7 +477,6 @@ if data_loaded:
                 if actual_h_pos is not None and ds_dist_col:
                     approach_df = df_ds[df_ds[ds_dist_col] < actual_h_pos].copy()
                     if not approach_df.empty:
-                        # 파생 변수 계산
                         approach_df['Dist_to_H'] = actual_h_pos - approach_df[ds_dist_col]
                         approach_df['V_ms'] = approach_df[ds_speed_col] / 3.6
                         approach_df['TTC'] = approach_df['Dist_to_H'] / approach_df['V_ms'].replace(0, 0.001)
