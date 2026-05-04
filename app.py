@@ -306,12 +306,34 @@ if data_loaded:
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader(f"💡 '{custom_scenario_name}' 요약 통계")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    
+    # 💡 [핵심 반영 1] 요약 통계 최상단 데이터 탐색 (휴머노이드 인지 거리 계산용)
+    humanoid_id = None
+    if df_fix is not None:
+        for oid, oname in objects_to_draw:
+            if "휴머노이드" in oname:
+                humanoid_id = oid
+                break
+                
+    # 💡 [핵심 반영 2] 5열 ➔ 6열 확장 및 휴머노이드 인지 거리(가시거리) 계산
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("총 주행 시간", f"{round(df_ds['Time_s'].max(), 1)} 초")
     c2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
     c3.metric("최대 조향 이탈", f"{round(df_ds[ds_offset_col].abs().max(), 2)} m" if ds_offset_col else "0 m")
     c4.metric("👀 총 눈 깜빡임", f"{len(df_blink) if df_blink is not None else 0} 회")
     c5.metric("차로 변경 횟수", f"{lane_change_count} 회")
+    
+    perception_dist_str = "-"
+    if humanoid_id is not None and actual_h_pos is not None and ds_dist_col:
+        raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
+        ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+        close_row = df_ds.iloc[(df_ds['Time_s'] - ta).abs().argsort()[:1]]
+        if not close_row.empty:
+            dist_ta = close_row[ds_dist_col].values[0]
+            perception_dist = max(0.0, actual_h_pos - dist_ta)
+            perception_dist_str = f"{perception_dist:.1f} m"
+            
+    c6.metric("🤖 최초 인지 거리", perception_dist_str)
     
     if humanoid_gaze_stats:
         st.markdown("#### 👀 휴머노이드 누적 주시 시간 분석 (다중 인지 포함)")
@@ -355,16 +377,12 @@ if data_loaded:
             </div>
             '''
             st.markdown(margin_html, unsafe_allow_html=True)
-
-        humanoid_id = None
-        if df_fix is not None:
-            for oid, oname in objects_to_draw:
-                if "휴머노이드" in oname:
-                    humanoid_id = oid
-                    break
                     
         if humanoid_id is not None:
             st.markdown("#### ⏱️ 인지 반응 분석 (휴머노이드 인지 ➔ 차로 변경)")
+            # 💡 [핵심 반영 3] 인지 거리 설명 강화
+            st.caption("차량이 전방의 휴머노이드를 최초로 발견(인지)했을 때의 거리 간격을 도출하고, 인지 후 차로를 변경하기까지 소요된 운전자의 반응 시간과 이동 거리를 분석합니다.")
+            
             raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
             ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
             tb = first_lc
@@ -378,7 +396,7 @@ if data_loaded:
                 view_html = ""
                 if actual_h_pos is not None:
                     view_dist = max(0, actual_h_pos - dist_ta)
-                    view_html = f'<div style="flex: 1; padding: 0 10px; border-right: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">최초 인지 시점의 전방 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #c0392b;">{view_dist:.1f} m</p></div>'
+                    view_html = f'<div style="flex: 1; padding: 0 10px; border-right: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">최초 인지 거리 (가시거리)</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #c0392b;">{view_dist:.1f} m</p></div>'
                 
                 react_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #fff9e6; padding: 20px; border-radius: 10px; border: 1px solid #fce79a; margin-top: 10px;">{view_html}<div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차로 변경 소요 시간</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_time:.2f} 초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차로 변경 이동 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_dist:.2f} m</p></div></div>'
                 st.markdown(react_html, unsafe_allow_html=True)
@@ -458,7 +476,6 @@ if data_loaded:
                     p_gaze = p_gaze[p_gaze > 0]
                     gaze_entropy = -sum(p_gaze * np.log2(p_gaze))
                     
-                    # 💡 [UI 개선] 너무 많은 데이터가 배열에 찍히는 것을 방지 (Top 5만 보여주고 생략)
                     if len(p_gaze) > 5:
                         prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze[:5]]) + f" ... (외 {len(p_gaze)-5}개)"
                     else:
@@ -477,6 +494,7 @@ if data_loaded:
                 if actual_h_pos is not None and ds_dist_col:
                     approach_df = df_ds[df_ds[ds_dist_col] < actual_h_pos].copy()
                     if not approach_df.empty:
+                        # 파생 변수 계산
                         approach_df['Dist_to_H'] = actual_h_pos - approach_df[ds_dist_col]
                         approach_df['V_ms'] = approach_df[ds_speed_col] / 3.6
                         approach_df['TTC'] = approach_df['Dist_to_H'] / approach_df['V_ms'].replace(0, 0.001)
