@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
@@ -64,7 +65,7 @@ else:
     ds_file = st.sidebar.file_uploader("주행 데이터 파일 업로드", type=['csv'])
     sac_file = st.sidebar.file_uploader("시선 이동(Saccade) 파일 업로드", type=['csv'])
     blink_file = st.sidebar.file_uploader("눈 깜빡임(Blink) 업로드 (선택)", type=['csv'])
-    fix_file = st.uploader("시선 고정(Fixations) 업로드 (선택)", type=['csv'])
+    fix_file = st.sidebar.file_uploader("시선 고정(Fixations) 업로드 (선택)", type=['csv'])
     map_file = st.sidebar.file_uploader("객체 이름 사전(mapping.csv) 업로드 (선택)", type=['csv'])
     if ds_file and sac_file:
         df_ds = pd.read_csv(ds_file)
@@ -173,6 +174,9 @@ if data_loaded:
     ds_speed_col = 'speedInKmPerHour' if 'speedInKmPerHour' in df_ds.columns else ('speed' if 'speed' in df_ds.columns else 'Velocity')
     ds_lane_col = 'laneNumber' if 'laneNumber' in df_ds.columns else ('Lane_ID' if 'Lane_ID' in df_ds.columns else None)
     ds_offset_col = 'offsetFromLaneCenter' if 'offsetFromLaneCenter' in df_ds.columns else None
+    
+    steer_col = next((col for col in df_ds.columns if 'steer' in col.lower()), None)
+    
     sac_time_col = 'start timestamp [ns]' if 'start timestamp [ns]' in df_sac.columns else 'start timestamp'
     sac_amp_col = 'amplitude [deg]' if 'amplitude [deg]' in df_sac.columns else 'amplitude'
     
@@ -199,6 +203,12 @@ if data_loaded:
                 
         lane_change_count = len(filtered_lane_changes)
 
+    accel_col = next((col for col in df_ds.columns if 'accel' in col.lower() and 'x' in col.lower()), None)
+    if accel_col:
+        y_accel = df_ds[accel_col]
+    else:
+        y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
+
     # ---------------------------------------------------------
     # 차트 그리기
     # ---------------------------------------------------------
@@ -210,8 +220,6 @@ if data_loaded:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds[ds_speed_col], mode='lines', name='속도(km/h)', line=dict(color='royalblue', width=2), customdata=df_ds[ds_dist_col] if ds_dist_col else None, hovertemplate=hovertemplate), secondary_y=False)
 
     if show_accel:
-        accel_col = next((col for col in df_ds.columns if 'accel' in col.lower() and 'x' in col.lower()), None)
-        y_accel = df_ds[accel_col] if accel_col else (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=y_accel, mode='lines', name='가속도(m/s²)', line=dict(color='darkmagenta', width=1.5)), secondary_y=True)
 
     if show_offset and ds_offset_col in df_ds.columns:
@@ -380,7 +388,111 @@ if data_loaded:
                 st.warning("⚠️ 차로 변경이 휴머노이드 인지보다 먼저 발생했습니다. (반응 속도 역전)")
 
     # ---------------------------------------------------------
-    # 5. SSD & 구간 속도 평가
+    # 💡 [개편] 심층 주행 & 인지 부하 분석 (SSM & Workload)
+    # ---------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🧠 심층 주행 & 인지 부하 분석 (SSM & Workload)")
+    
+    with st.expander("🛠️ 인지적 작업 부하 및 안정성 지표 상세 보기", expanded=True):
+        col_w1, col_w2 = st.columns(2)
+        
+        # 1. SDLP 및 Steering Entropy
+        with col_w1:
+            st.markdown("#### 1. 차로 유지 편차 (SDLP) 및 조향 엔트로피")
+            st.caption("차량이 차로 중앙에서 좌우로 얼마나 비틀거렸는지, 핸들 조작이 얼마나 불규칙하고 급격했는지를 수치화하여 운전자의 당황(인지적 부하) 수준을 평가합니다.")
+            
+            with st.container(border=True):
+                # SDLP 산출
+                sdlp_val = df_ds[ds_offset_col].std() if ds_offset_col and not df_ds[ds_offset_col].isnull().all() else 0.0
+                st.markdown(f"**🔹 차로 유지 편차 (SDLP)**")
+                st.markdown(f"- **사용 데이터:** `offsetFromLaneCenter` (차로 중심선과의 거리)")
+                st.markdown(f"- **계산 방식:** 전체 주행 구간 내 중심 편차 데이터의 표준편차(Standard Deviation)")
+                st.info(f"**결과값:** {sdlp_val:.3f} m")
+                
+                st.divider()
+                
+                # Steering Entropy
+                target_steer_col = steer_col if steer_col else ds_offset_col
+                st.markdown(f"**🔹 조향 엔트로피 (Steering Entropy)**")
+                st.markdown(f"- **사용 데이터:** `steer` (핸들 조향각) 또는 편차 데이터")
+                st.markdown(f"- **계산 방식:** 2차 테일러 전개(2nd-order Taylor expansion)를 이용해 과거 3초간의 패턴으로 현재 조작을 예측한 뒤, 실제 조작값과의 오차 분포를 섀넌의 엔트로피 공식에 적용")
+                if target_steer_col and not df_ds[target_steer_col].isnull().all():
+                    s_data = df_ds[target_steer_col].fillna(0)
+                    x_1 = s_data.shift(1)
+                    x_2 = s_data.shift(2)
+                    x_3 = s_data.shift(3)
+                    pred = x_1 + (x_1 - x_2) + 0.5 * ((x_1 - x_2) - (x_2 - x_3))
+                    error = (s_data - pred).dropna()
+                    
+                    if len(error) > 10:
+                        bins = np.histogram_bin_edges(error, bins=9)
+                        p_steer, _ = np.histogram(error, bins=bins)
+                        p_steer = p_steer[p_steer > 0] / sum(p_steer)
+                        steering_entropy = -sum(p_steer * np.log2(p_steer))
+                        st.success(f"**결과값:** {steering_entropy:.3f}")
+                    else:
+                        st.warning("데이터가 부족하여 계산할 수 없습니다.")
+                else:
+                    st.warning("조향 데이터가 존재하지 않습니다.")
+
+            # Jerk
+            st.markdown("#### 2. 가속도 변화율 (Jerk)")
+            st.caption("가속도가 시간에 따라 얼마나 급격히 변했는지 분석하여, 놀람으로 인한 '급제동'이나 '급가속'이 발생한 횟수를 정량화합니다.")
+            with st.container(border=True):
+                jerk = y_accel.diff() / df_ds['Time_s'].diff()
+                max_jerk = jerk.abs().max()
+                harsh_ratio = (jerk.abs() > 2.0).sum() / len(jerk.dropna()) * 100
+                st.markdown("- **사용 데이터:** `accel_x` (종방향 가속도) 또는 속도 미분값")
+                st.markdown("- **계산 방식:** 가속도를 시간($\Delta t$)으로 한 번 더 미분하여 도출 ($\Delta a / \Delta t$). 임계치(2.0 $m/s^3$)를 초과한 조작의 비율 산출")
+                st.warning(f"**최대 저크 (Max Jerk):** {max_jerk:.2f} $m/s^3$\n\n**급조작(위험) 비율:** {harsh_ratio:.2f} %")
+
+        # 3. Gaze Entropy & TTC/SDI
+        with col_w2:
+            st.markdown("#### 3. 시선 분산도 (Gaze Entropy)")
+            st.caption("운전자의 시선이 전방(도로)에 집중되었는지, 아니면 갑자기 등장한 로봇이나 주변 환경으로 인해 산만하게 흩어졌는지를 수학적으로 입증합니다.")
+            with st.container(border=True):
+                st.markdown("- **사용 데이터:** `fixations.csv`의 객체 응시 기록")
+                st.markdown("- **계산 방식:** 섀넌의 정보 엔트로피 공식을 활용하여, 시선이 여러 객체로 분산될수록 결과값이 높아지도록 확률 모델 적용")
+                st.latex(r"SGE = -\sum_{i=1}^{n} p_i \log_2 p_i")
+                
+                if df_fix is not None and fix_id_col in df_fix.columns:
+                    p_gaze = df_fix[fix_id_col].value_counts(normalize=True).values
+                    p_gaze = p_gaze[p_gaze > 0]
+                    gaze_entropy = -sum(p_gaze * np.log2(p_gaze))
+                    st.info(f"**결과값 (SGE):** {gaze_entropy:.3f}")
+                else:
+                    st.warning("시선 고정(Fixation) 데이터가 없습니다.")
+
+            st.markdown("#### 4. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
+            st.caption("전방의 물리적 장애물(휴머노이드)을 발견했을 때, 현재 속도를 유지할 경우 충돌까지 남은 시간과 안전하게 제동하기 위한 여유 거리를 평가하는 대표적인 교통안전대체지표(SSM)입니다.")
+            with st.container(border=True):
+                st.markdown("- **사용 데이터:** 차량 `speed`, `distance`, 감지된 `휴머노이드 물리적 위치(m)`")
+                st.markdown("- **계산 방식:**\n  - **TTC:** 남은 거리 / 현재 속도\n  - **SDI:** 필요 제동 거리(공주거리 포함) / 남은 거리 (값이 1을 초과하면 추돌을 피할 수 없는 위험 상태)")
+                if actual_h_pos is not None and ds_dist_col:
+                    approach_df = df_ds[df_ds[ds_dist_col] < actual_h_pos].copy()
+                    if not approach_df.empty:
+                        approach_df['Dist_to_H'] = actual_h_pos - approach_df[ds_dist_col]
+                        approach_df['V_ms'] = approach_df[ds_speed_col] / 3.6
+                        
+                        approach_df['TTC'] = approach_df['Dist_to_H'] / approach_df['V_ms'].replace(0, 0.001)
+                        min_ttc = approach_df.loc[approach_df['V_ms'] > 1.0, 'TTC'].min()
+                        
+                        tr, f, g = 2.5, 0.8, 9.81
+                        approach_df['Stop_Dist'] = approach_df['V_ms']*tr + (approach_df['V_ms']**2)/(2*g*f)
+                        approach_df['SDI'] = approach_df['Stop_Dist'] / approach_df['Dist_to_H'].replace(0, 0.001)
+                        max_sdi = approach_df['SDI'].max()
+                        
+                        if pd.isna(min_ttc):
+                            min_ttc = float('inf')
+                        
+                        st.error(f"**최소 충돌 예상 시간 (Min TTC):** {min_ttc:.2f} 초\n\n**최대 정지 거리 지수 (Max SDI):** {max_sdi:.3f}")
+                    else:
+                        st.warning("휴머노이드 접근 전 주행 데이터가 부족합니다.")
+                else:
+                    st.warning("휴머노이드 물리적 위치 정보가 없어 계산할 수 없습니다.")
+
+    # ---------------------------------------------------------
+    # 5. 기존 안전성 평가 (SSD & 구간 속도)
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("🛑 시나리오 안전성 평가 (SSD & 구간 속도)")
@@ -426,7 +538,6 @@ if data_loaded:
             st.info(f"계산 결과: **{ssd_val:.2f} m** ➔ **{'🟢 Safety' if ssd_val <= d_val else '🔴 Danger'}**")
             
             st.markdown("**2. 구간 속도**")
-            # 💡 [수정] 캡션 내부의 ** 강조 표시를 모두 제거하여 평문으로 표시
             st.caption("💡 참고: 구간 속도는 휴머노이드 최초 인지 시점(t_a)부터 차로 변경 시작 시점(t_b)까지 이동한 구간의 평균 속도입니다.")
             st.latex(r"구간 속도 = \frac{L}{t_b - t_a} \times 3.6")
             if tb_val > ta_val:
