@@ -326,3 +326,287 @@ if data_loaded:
                         fill='toself', fillcolor=zone["color"], mode='lines', line=dict(width=0),
                         name=zone["name"], hoveron='fills', hoverinfo='text',
                         text=f"<b>{zone['name']}</b><br>{zone['start']}m ~ {zone['end']}m", showlegend=False
+                    ), secondary_y=False)
+
+    # 💡 [복구됨] 휴머노이드 물리적 위치 선
+    if show_humanoid_pos and actual_h_pos is not None and ds_dist_col:
+        h_df = df_ds[df_ds[ds_dist_col] >= actual_h_pos]
+        if not h_df.empty:
+            h_pass_time = h_df.iloc[0]['Time_s']
+            fig.add_trace(go.Scatter(
+                x=[h_pass_time, h_pass_time], y=[0, max_y], mode='lines', 
+                line=dict(color='purple', width=3, dash='solid'),
+                name="휴머노이드 물리적 위치", 
+                hovertemplate=f"<b>🤖 휴머노이드 물리적 위치</b><br>거리: {actual_h_pos}m<extra></extra>", showlegend=False
+            ), secondary_y=False)
+
+    # 💡 [복구됨] 테이퍼 시점 선
+    if show_taper_pos and ds_dist_col:
+        taper_df = df_ds[df_ds[ds_dist_col] >= 2500.0]
+        if not taper_df.empty:
+            taper_time = taper_df.iloc[0]['Time_s']
+            fig.add_trace(go.Scatter(
+                x=[taper_time, taper_time], y=[0, max_y], mode='lines', 
+                line=dict(color='black', width=1.5, dash='solid'),
+                name="테이퍼 시점", 
+                hovertemplate="<b>🚧 테이퍼 시점 (차로 감소 시작)</b><br>위치: 2500.0m<extra></extra>", showlegend=False
+            ), secondary_y=False)
+
+    # 💡 [복구됨] 객체 인지(Fixation) 시점 마커
+    if df_fix is not None and objects_to_draw:
+        for obj_id, obj_name in objects_to_draw:
+            first_row = df_fix[df_fix[fix_id_col] == obj_id].iloc[0]
+            raw_t = first_row[fix_time_col]
+            adj_time = ((raw_t - sac_start_time) / 1e9) + time_offset if raw_t > 1e12 else (raw_t - sac_start_time) + time_offset
+            
+            close_row = df_ds.iloc[(df_ds['Time_s'] - adj_time).abs().argsort()[:1]]
+            dist_txt = f"({close_row[ds_dist_col].values[0]:.1f}m 지점)" if ds_dist_col and not close_row.empty else ""
+            line_color = 'red' if "휴머노이드" in obj_name else 'royalblue'
+            
+            fig.add_trace(go.Scatter(
+                x=[adj_time, adj_time], y=[0, max_y], mode='lines', 
+                line=dict(color=line_color, width=2, dash='dash' if "휴머노이드" in obj_name else 'dot'),
+                name=obj_name, hovertemplate=f"<b>🎯 {obj_name} 인지 시점</b><br>인지 위치: {dist_txt}<extra></extra>", showlegend=False
+            ), secondary_y=False)
+
+    fig.update_layout(title=f"[{custom_scenario_name}] 실시간 통합 데이터 분석 차트", xaxis_title="주행 시간 (초)", height=700, hovermode="x unified", legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor='rgba(255, 255, 255, 0.7)'))
+    fig.update_yaxes(title_text="속도 (km/h) / 시야각 (deg)", secondary_y=False)
+    fig.update_yaxes(title_text="안정성 및 심층 분석 지표", secondary_y=True, showgrid=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ---------------------------------------------------------
+    # 통계 섹션
+    # ---------------------------------------------------------
+    st.markdown("---")
+    st.subheader(f"💡 '{custom_scenario_name}' 요약 통계")
+    
+    humanoid_id = None
+    if df_fix is not None:
+        for oid, oname in objects_to_draw:
+            if "휴머노이드" in oname:
+                humanoid_id = oid
+                break
+                
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("총 주행 시간", f"{round(df_ds['Time_s'].max(), 1)} 초")
+    c2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
+    c3.metric("최대 조향 이탈", f"{round(df_ds[ds_offset_col].abs().max(), 2)} m" if ds_offset_col else "0 m")
+    c4.metric("👀 총 눈 깜빡임", f"{len(df_blink) if df_blink is not None else 0} 회")
+    c5.metric("차로 변경 횟수", f"{lane_change_count} 회")
+    
+    perception_dist_str = "-"
+    if humanoid_id is not None and actual_h_pos is not None and ds_dist_col:
+        raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
+        ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+        close_row = df_ds.iloc[(df_ds['Time_s'] - ta).abs().argsort()[:1]]
+        if not close_row.empty:
+            dist_ta = close_row[ds_dist_col].values[0]
+            perception_dist = max(0.0, actual_h_pos - dist_ta)
+            perception_dist_str = f"{perception_dist:.1f} m"
+            
+    c6.metric("🤖 최초 인지 거리", perception_dist_str)
+    
+    if humanoid_gaze_stats:
+        st.markdown("#### 👀 휴머노이드 누적 주시 시간 분석 (다중 인지 포함)")
+        gaze_html = '<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 5px; margin-bottom: 20px;">'
+        total_dur = 0.0
+        for order, dur in humanoid_gaze_stats:
+            total_dur += dur
+            gaze_html += f'<div style="background-color: #f0f2f6; padding: 12px 18px; border-radius: 8px; border: 1px solid #dcdede;"><p style="font-size: 13px; margin: 0; color: #555;">{order}차 주시</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #e74c3c;">{dur:.2f}초</p></div>'
+        gaze_html += f'<div style="background-color: #ffeaea; padding: 12px 18px; border-radius: 8px; border: 1.5px solid #ffb3b3;"><p style="font-size: 13px; margin: 0; color: #c0392b; font-weight: bold;">총 누적 주시 시간</p><p style="font-size: 18px; font-weight: 900; margin: 0; color: #c0392b;">{total_dur:.2f}초</p></div></div>'
+        st.markdown(gaze_html, unsafe_allow_html=True)
+
+    if lane_change_count > 0 and ds_dist_col:
+        st.markdown("#### 🚧 첫 번째 차로 변경 상세 분석 (기준: 변경 시점 ±3초)")
+        first_lc = filtered_lane_changes[0]
+        st_t, ed_t = max(0, first_lc - 3.0), first_lc + 3.0
+        st_dist = df_ds.iloc[(df_ds['Time_s'] - st_t).abs().argsort()[:1]][ds_dist_col].values[0]
+        ed_dist = df_ds.iloc[(df_ds['Time_s'] - ed_t).abs().argsort()[:1]][ds_dist_col].values[0]
+        
+        lc_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #f8f9fb; padding: 20px; border-radius: 10px; border: 1px solid #e6e6e9; margin-top: 10px;"><div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">시작 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{st_t:.1f}초 / {st_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">종료 지점 (시간 / 거리)</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #1f77b4;">{ed_t:.1f}초 / {ed_dist:.1f}m</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 소요 시간</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_t - st_t:.1f}초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #ccc;"><p style="font-size: 14px; margin-bottom: 5px; color: #555;">변경 중 이동 거리</p><p style="font-size: 16px; font-weight: bold; margin: 0; color: #2ca02c;">{ed_dist - st_dist:.1f}m</p></div></div>'
+        st.markdown(lc_html, unsafe_allow_html=True)
+        
+        taper_df_stat = df_ds[df_ds[ds_dist_col] >= 2500.0]
+        if not taper_df_stat.empty:
+            st.markdown("#### 🛡️ 테이퍼 구간 진입 전 여유 마진 분석 (2500m 테이퍼 시점 기준)")
+            taper_time_stat = taper_df_stat.iloc[0]['Time_s']
+            lc_exact_dist = df_ds.iloc[(df_ds['Time_s'] - first_lc).abs().argsort()[:1]][ds_dist_col].values[0]
+            
+            margin_time = taper_time_stat - first_lc
+            margin_dist = max(0.0, 2500.0 - lc_exact_dist)
+            
+            margin_html = f'''
+            <div style="display: flex; justify-content: space-between; text-align: center; background-color: #f4f6f9; padding: 20px; border-radius: 10px; border: 1px solid #d3d9e2; margin-top: 10px;">
+                <div style="flex: 1; padding: 0 10px;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">차로 변경 ➔ 테이퍼 시점 여유 시간</p>
+                    <p style="font-size: 18px; font-weight: bold; margin: 0; color: #2c3e50;">{margin_time:.2f} 초</p>
+                </div>
+                <div style="flex: 1; padding: 0 10px; border-left: 1px solid #d3d9e2;">
+                    <p style="font-size: 14px; margin-bottom: 5px; color: #555;">차로 변경 ➔ 테이퍼 시점 여유 거리</p>
+                    <p style="font-size: 18px; font-weight: bold; margin: 0; color: #2c3e50;">{margin_dist:.2f} m</p>
+                </div>
+            </div>
+            '''
+            st.markdown(margin_html, unsafe_allow_html=True)
+                    
+        if humanoid_id is not None:
+            st.markdown("#### ⏱️ 인지 반응 분석 (휴머노이드 인지 ➔ 차로 변경)")
+            st.caption("차량이 전방의 휴머노이드를 최초로 발견(인지)했을 때의 거리 간격을 도출하고, 인지 후 차로를 변경하기까지 소요된 운전자의 반응 시간과 이동 거리를 분석합니다.")
+            
+            raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
+            ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+            tb = first_lc
+            
+            if tb > ta:
+                dist_ta = df_ds.iloc[(df_ds['Time_s'] - ta).abs().argsort()[:1]][ds_dist_col].values[0]
+                dist_tb = df_ds.iloc[(df_ds['Time_s'] - tb).abs().argsort()[:1]][ds_dist_col].values[0]
+                react_time = tb - ta
+                react_dist = abs(dist_tb - dist_ta)
+                
+                view_html = ""
+                if actual_h_pos is not None:
+                    view_dist = max(0, actual_h_pos - dist_ta)
+                    view_html = f'<div style="flex: 1; padding: 0 10px; border-right: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">최초 인지 거리 (가시거리)</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #c0392b;">{view_dist:.1f} m</p></div>'
+                
+                react_html = f'<div style="display: flex; justify-content: space-between; text-align: center; background-color: #fff9e6; padding: 20px; border-radius: 10px; border: 1px solid #fce79a; margin-top: 10px;">{view_html}<div style="flex: 1; padding: 0 10px;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차로 변경 소요 시간</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_time:.2f} 초</p></div><div style="flex: 1; padding: 0 10px; border-left: 1px solid #fce79a;"><p style="font-size: 14px; margin-bottom: 5px; color: #8a6d3b;">인지 ➔ 차로 변경 이동 거리</p><p style="font-size: 18px; font-weight: bold; margin: 0; color: #d35400;">{react_dist:.2f} m</p></div></div>'
+                st.markdown(react_html, unsafe_allow_html=True)
+            else:
+                st.warning("⚠️ 차로 변경이 휴머노이드 인지보다 먼저 발생했습니다. (반응 속도 역전)")
+
+    # ---------------------------------------------------------
+    # 💡 심층 주행 & 인지 부하 분석 (SSM & Workload)
+    # ---------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🧠 심층 주행 & 인지 부하 분석 (SSM & Workload)")
+    
+    with st.expander("🛠️ 인지적 작업 부하 및 안정성 지표 상세 보기", expanded=True):
+        col_w1, col_w2 = st.columns(2)
+        
+        with col_w1:
+            st.markdown("#### 1. 차로 유지 편차 (SDLP) 및 조향 엔트로피")
+            with st.container(border=True):
+                sdlp_val = df_ds[ds_offset_col].std() if ds_offset_col and not df_ds[ds_offset_col].isnull().all() else 0.0
+                st.markdown(f"**🔹 차로 유지 편차 (SDLP)**")
+                st.info(f"**계산 결과 (SDLP):** {sdlp_val:.3f} m")
+                
+                st.divider()
+                
+                target_steer_col = steer_col if steer_col else ds_offset_col
+                st.markdown(f"**🔹 조향 엔트로피 (Steering Entropy)**")
+                if target_steer_col and not df_ds[target_steer_col].isnull().all():
+                    s_data = df_ds[target_steer_col].fillna(0)
+                    x_1 = s_data.shift(1); x_2 = s_data.shift(2); x_3 = s_data.shift(3)
+                    pred = x_1 + (x_1 - x_2) + 0.5 * ((x_1 - x_2) - (x_2 - x_3))
+                    error = (s_data - pred).dropna()
+                    if len(error) > 10:
+                        bins = np.histogram_bin_edges(error, bins=9)
+                        p_steer, _ = np.histogram(error, bins=bins)
+                        p_steer = p_steer[p_steer > 0] / sum(p_steer)
+                        steering_entropy = -sum(p_steer * np.log2(p_steer))
+                        st.success(f"**계산 결과 (조향 엔트로피):** {steering_entropy:.3f}")
+                    else: st.warning("데이터 부족")
+                else: st.warning("조향 데이터 없음")
+
+            st.markdown("#### 2. 가속도 변화율 (Jerk)")
+            with st.container(border=True):
+                jerk = y_accel.diff() / df_ds['Time_s'].diff()
+                max_jerk = jerk.abs().max()
+                harsh_ratio = (jerk.abs() > 2.0).sum() / len(jerk.dropna()) * 100
+                st.warning(f"**최대 저크 (Max Jerk):** {max_jerk:.2f} $m/s^3$\n\n**급조작(위험) 비율:** {harsh_ratio:.2f} %")
+
+        with col_w2:
+            st.markdown("#### 3. 누적 시선 분산도 (전체 Gaze Entropy)")
+            with st.container(border=True):
+                if df_fix is not None and fix_id_col in df_fix.columns:
+                    p_gaze = df_fix[fix_id_col].value_counts(normalize=True).values
+                    p_gaze = p_gaze[p_gaze > 0]
+                    gaze_entropy = -sum(p_gaze * np.log2(p_gaze))
+                    prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze[:5]]) + (f" ... (외 {len(p_gaze)-5}개)" if len(p_gaze)>5 else "")
+                    st.markdown(f"- **실제 대입 데이터:** 총 {len(p_gaze)}개 타겟의 확률 분포 $p_i$ = [{prob_str}]")
+                    st.info(f"**계산 결과 (전체 구간 SGE):** {gaze_entropy:.3f}")
+                else: st.warning("시선 고정 데이터 없음")
+
+            st.markdown("#### 4. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
+            with st.container(border=True):
+                if actual_h_pos is not None and ds_dist_col:
+                    approach_df = df_ds[df_ds[ds_dist_col] < actual_h_pos].copy()
+                    if not approach_df.empty:
+                        approach_df['Dist_to_H'] = actual_h_pos - approach_df[ds_dist_col]
+                        approach_df['V_ms'] = approach_df[ds_speed_col] / 3.6
+                        approach_df['TTC'] = approach_df['Dist_to_H'] / approach_df['V_ms'].replace(0, 0.001)
+                        min_ttc_idx = approach_df.loc[approach_df['V_ms'] > 1.0, 'TTC'].idxmin()
+                        
+                        tr, f, g = 2.5, 0.8, 9.81
+                        approach_df['Stop_Dist'] = approach_df['V_ms']*tr + (approach_df['V_ms']**2)/(2*g*f)
+                        approach_df['SDI'] = approach_df['Stop_Dist'] / approach_df['Dist_to_H'].replace(0, 0.001)
+                        max_sdi_idx = approach_df['SDI'].idxmax()
+                        
+                        if min_ttc_idx is not None:
+                            st.error(f"**최소 충돌 예상 시간 (Min TTC): {approach_df.loc[min_ttc_idx, 'TTC']:.2f} 초**")
+                        if max_sdi_idx is not None:
+                            st.error(f"**최대 정지 거리 지수 (Max SDI): {approach_df.loc[max_sdi_idx, 'SDI']:.3f}**")
+                    else: st.warning("접근 데이터 부족")
+
+    # ---------------------------------------------------------
+    # 5. [강화] 시나리오 안전성 평가 (SSD & 구간 속도)
+    # ---------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🛑 시나리오 안전성 평가 (이중 SSD & 구간 속도)")
+    
+    with st.expander("🛠️ SSD 이중 검증 및 구간 속도 결과 보기", expanded=True):
+        auto_ta, auto_tb, v_a, v_b, dist_a, dist_b = 0.0, 6.0, 90.0, 90.0, 1000.0, 1150.0
+        
+        target_id_ssd = None
+        if objects_to_draw:
+            for oid, oname in objects_to_draw:
+                if "휴머노이드" in oname: target_id_ssd = oid; break
+            if target_id_ssd is None: target_id_ssd, _ = objects_to_draw[0]
+
+        if df_fix is not None and target_id_ssd is not None and lane_change_count > 0 and ds_dist_col:
+            raw_ta = df_fix[df_fix[fix_id_col] == target_id_ssd].iloc[0][fix_time_col]
+            auto_ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+            row_a = df_ds.iloc[(df_ds['Time_s'] - auto_ta).abs().argsort()[:1]]
+            v_a = row_a[ds_speed_col].values[0]; dist_a = row_a[ds_dist_col].values[0]
+            
+            auto_tb = filtered_lane_changes[0]
+            row_b = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]]
+            v_b = row_b[ds_speed_col].values[0]; dist_b = row_b[ds_dist_col].values[0]
+            
+            auto_l = abs(dist_b - dist_a)
+            d_a = max(0.0, 2500.0 - dist_a)
+            d_b = max(0.0, 2500.0 - dist_b)
+
+        col_ssd1, col_ssd2 = st.columns(2)
+        f_val, s_val, tr_val = 0.8, 0.0, 2.5
+        
+        with col_ssd1:
+            st.markdown("### 🔵 [초기 안전성] 인지 시점 기준")
+            st.caption("로봇을 발견한 최초 순간, 물리적으로 테이퍼 전까지 멈출 수 있는 제동 거리가 확보되는지 검증합니다.")
+            v_val_a = st.number_input("인지 시점 속도 V_a (km/h)", value=float(v_a), format="%.2f", key="va")
+            d_val_a = st.number_input("인지 시점 여유거리 D_a (m)", value=float(d_a), format="%.2f", key="da")
+            
+            ssd_a = (v_val_a**2) / (254 * (f_val + s_val)) + tr_val * (v_val_a / 3.6)
+            st.latex(r"SSD_a = \frac{V_a^2}{254 \times (f + s)} + t_r \times \frac{V_a}{3.6}")
+            st.latex(fr"= \frac{{{v_val_a:.1f}^2}}{{254 \times 0.8}} + 2.5 \times \frac{{{v_val_a:.1f}}}{{3.6}} = {ssd_a:.2f}m")
+            st.info(f"판정: **{'🟢 Safety' if ssd_a <= d_val_a else '🔴 Danger'}** (남은 {d_val_a:.1f}m 대비 필요 {ssd_a:.1f}m)")
+
+        with col_ssd2:
+            st.markdown("### 🟠 [실행 안전성] 차로 변경 시점 기준")
+            st.caption("실제 회피 기동(차로 변경)을 시작하는 순간의 주행 상태가 안전 마진을 만족하는지 검증합니다.")
+            v_val_b = st.number_input("변경 시점 속도 V_b (km/h)", value=float(v_b), format="%.2f", key="vb")
+            d_val_b = st.number_input("변경 시점 여유거리 D_b (m)", value=float(d_b), format="%.2f", key="db")
+            
+            ssd_b = (v_val_b**2) / (254 * (f_val + s_val)) + tr_val * (v_val_b / 3.6)
+            st.latex(r"SSD_b = \frac{V_b^2}{254 \times (f + s)} + t_r \times \frac{V_b}{3.6}")
+            st.latex(fr"= \frac{{{v_val_b:.1f}^2}}{{254 \times 0.8}} + 2.5 \times \frac{{{v_val_b:.1f}}}{{3.6}} = {ssd_b:.2f}m")
+            st.info(f"판정: **{'🟢 Safety' if ssd_b <= d_val_b else '🔴 Danger'}** (남은 {d_val_b:.1f}m 대비 필요 {ssd_b:.1f}m)")
+
+        st.divider()
+        st.markdown("### 🏁 2. 구간 속도 (SMS)")
+        st.caption("💡 참고: 구간 속도는 휴머노이드 최초 인지 시점(t_a)부터 차로 변경 시작 시점(t_b)까지 이동한 구간의 평균 속도입니다.")
+        l_val = st.number_input("구간 길이 L (m)", value=float(auto_l), format="%.2f")
+        if auto_tb > auto_ta:
+            sms_val = (l_val / (auto_tb - auto_ta)) * 3.6
+            st.latex(fr"SMS = \frac{{{l_val:.1f}}}{{{auto_tb:.2f} - {auto_ta:.2f}}} \times 3.6 = {sms_val:.2f} km/h")
+            st.info(f"판정 결과: **{sms_val:.2f} km/h** ➔ **{'🟢 Safety' if sms_val <= 80 else '🔴 Danger'}**")
+        else: st.error("시간 오류")
