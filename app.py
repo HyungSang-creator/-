@@ -93,8 +93,8 @@ if data_loaded:
     show_blink = st.sidebar.checkbox("😌 눈 깜빡임 (하단 마커)", value=True)
     show_lane_change = st.sidebar.checkbox("🚧 차로 변경 궤적 하이라이트", value=True)
     
-    # 💡 [신규] 동적 SGE 그래프 토글 및 슬라이더 추가
-    show_dynamic_sge = st.sidebar.checkbox("🧠 동적 시선 분산도(SGE) 꺾은선", value=True)
+    # 💡 [수정] 동적 SGE 체크박스 기본값을 False로 변경
+    show_dynamic_sge = st.sidebar.checkbox("🧠 동적 시선 분산도(SGE) 꺾은선", value=False)
     if show_dynamic_sge:
         sge_window = st.sidebar.slider("SGE 산출 윈도우 크기 (과거 n초)", 1.0, 10.0, 3.0, 0.5)
     
@@ -190,7 +190,6 @@ if data_loaded:
     is_ns = df_sac[sac_time_col].max() > 1e12
     df_sac['Time_s'] = ((df_sac[sac_time_col] - sac_start_time) / 1e9) + time_offset if is_ns else (df_sac[sac_time_col] - sac_start_time) + time_offset
 
-    # 💡 [신규] df_fix의 Time_s를 전역적으로 계산 (동적 SGE 그래프용)
     if df_fix is not None and fix_time_col is not None:
         is_fix_ns = df_fix[fix_time_col].max() > 1e12
         df_fix['Time_s'] = ((df_fix[fix_time_col] - sac_start_time) / 1e9) + time_offset if is_fix_ns else (df_fix[fix_time_col] - sac_start_time) + time_offset
@@ -218,13 +217,11 @@ if data_loaded:
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
-    # 💡 [신규] 동적 SGE (Sliding Window) 계산
     if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns and 'Time_s' in df_fix.columns:
         sge_vals = []
         fix_t = df_fix['Time_s'].values
         fix_i = df_fix[fix_id_col].values
         for current_t in df_ds['Time_s']:
-            # 현재 시간 기준으로 과거 n초 윈도우 마스킹
             mask = (fix_t >= current_t - sge_window) & (fix_t <= current_t)
             w_ids = fix_i[mask]
             if len(w_ids) > 0:
@@ -254,7 +251,6 @@ if data_loaded:
     if show_saccade and sac_amp_col in df_sac.columns:
         fig.add_trace(go.Scatter(x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동', fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5)), secondary_y=False)
 
-    # 💡 [신규] 동적 SGE 꺾은선 차트 추가 (Secondary Y축 사용)
     if show_dynamic_sge and 'Dynamic_SGE' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name=f'동적 SGE ({sge_window}s)', line=dict(color='#FF8C00', width=2.5, dash='solid')), secondary_y=True)
 
@@ -513,7 +509,6 @@ if data_loaded:
     st.subheader("🛑 시나리오 안전성 평가 (이중 SSD & 구간 속도)")
     
     with st.expander("🛠️ SSD 이중 검증 및 구간 속도 결과 보기", expanded=True):
-        # 데이터 자동 추출
         auto_ta, auto_tb, v_a, v_b, dist_a, dist_b = 0.0, 6.0, 90.0, 90.0, 1000.0, 1150.0
         
         target_id_ssd = None
