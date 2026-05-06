@@ -94,7 +94,6 @@ if data_loaded:
     show_lane_change = st.sidebar.checkbox("🚧 차로 변경 궤적 하이라이트", value=True)
     time_offset = st.sidebar.slider("아이트래커 시간 오차 보정 (초)", -10.0, 10.0, 0.0, 0.1)
 
-    # 💡 [신규] 심층 분석 동적 그래프 전용 섹션 개편
     st.sidebar.markdown("---")
     st.sidebar.header("🧠 심층 분석 동적 그래프")
     window_size = st.sidebar.slider("산출 윈도우 크기 (과거 n초)", 1.0, 10.0, 3.0, 0.5)
@@ -198,19 +197,32 @@ if data_loaded:
         is_fix_ns = df_fix[fix_time_col].max() > 1e12
         df_fix['Time_s'] = ((df_fix[fix_time_col] - sac_start_time) / 1e9) + time_offset if is_fix_ns else (df_fix[fix_time_col] - sac_start_time) + time_offset
 
-    # 가속도 산출 (Jerk용)
+    lane_change_count = 0
+    filtered_lane_changes = []
+    
+    if ds_lane_col in df_ds.columns:
+        df_ds.loc[df_ds[ds_lane_col] >= 3, ds_lane_col] = 2
+        df_ds.loc[df_ds[ds_lane_col] <= 0, ds_lane_col] = 1
+        
+        raw_lane_changes = df_ds[df_ds[ds_lane_col].diff().abs() > 0]['Time_s'].tolist()
+        last_lc_time = -999.0
+        
+        for lc_time in raw_lane_changes:
+            if lc_time - last_lc_time > 5.0:
+                filtered_lane_changes.append(lc_time)
+                last_lc_time = lc_time
+                
+        lane_change_count = len(filtered_lane_changes)
+
     accel_col = next((col for col in df_ds.columns if 'accel' in col.lower() and 'x' in col.lower()), None)
     if accel_col:
         y_accel = df_ds[accel_col]
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
-    # ---------------------------------------------------------
-    # 💡 동적 지표 계산 (Sliding Window)
-    # ---------------------------------------------------------
+    # 동적 지표 계산
     time_vals = df_ds['Time_s'].values
 
-    # 1. 동적 SGE
     if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns:
         sge_vals = []
         fix_t = df_fix['Time_s'].values; fix_i = df_fix[fix_id_col].values
@@ -223,7 +235,6 @@ if data_loaded:
             else: sge_vals.append(0.0)
         df_ds['Dynamic_SGE'] = sge_vals
 
-    # 2. 동적 조향 엔트로피
     if show_dynamic_steer:
         target_steer_col = steer_col if steer_col else ds_offset_col
         if target_steer_col:
@@ -242,11 +253,9 @@ if data_loaded:
                 else: ent_vals.append(0.0)
             df_ds['Dynamic_Steer_Ent'] = ent_vals
 
-    # 3. 동적 Jerk
     if show_dynamic_jerk:
         df_ds['Dynamic_Jerk'] = y_accel.diff() / df_ds['Time_s'].diff()
 
-    # 4. 💡 [신규] 동적 SDLP (차로 유지 편차)
     if show_dynamic_sdlp and ds_offset_col:
         sdlp_vals = []
         offset_data = df_ds[ds_offset_col].values
@@ -264,34 +273,56 @@ if data_loaded:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     max_y = df_ds[ds_speed_col].max() if ds_speed_col in df_ds.columns else 100
 
-    if show_speed:
-        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds[ds_speed_col], mode='lines', name='속도(km/h)', line=dict(color='royalblue', width=2)), secondary_y=False)
+    if show_speed and ds_speed_col in df_ds.columns:
+        hovertemplate = '%{y:.1f} <br>📍 위치: %{customdata:.1f} m' if ds_dist_col else '%{y:.1f}'
+        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds[ds_speed_col], mode='lines', name='속도(km/h)', line=dict(color='royalblue', width=2), customdata=df_ds[ds_dist_col] if ds_dist_col else None, hovertemplate=hovertemplate), secondary_y=False)
+
     if show_accel:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=y_accel, mode='lines', name='가속도(m/s²)', line=dict(color='darkmagenta', width=1.5)), secondary_y=True)
-    if show_offset and ds_offset_col:
+
+    if show_offset and ds_offset_col in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds[ds_offset_col], mode='lines', name='조향 편차', line=dict(color='seagreen', width=2, dash='dot')), secondary_y=True)
-    if show_saccade:
+
+    if show_saccade and sac_amp_col in df_sac.columns:
         fig.add_trace(go.Scatter(x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동', fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5)), secondary_y=False)
 
-    # 심층 분석 동적 레이어들 (Secondary Y축 사용)
-    if show_dynamic_sge:
+    if show_dynamic_sge and 'Dynamic_SGE' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name='동적 SGE', line=dict(color='#FF8C00', width=2.5)), secondary_y=True)
-    if show_dynamic_steer:
+    if show_dynamic_steer and 'Dynamic_Steer_Ent' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Steer_Ent'], mode='lines', name='동적 조향 엔트로피', line=dict(color='#8A2BE2', width=2.5, dash='dash')), secondary_y=True)
-    if show_dynamic_jerk:
+    if show_dynamic_jerk and 'Dynamic_Jerk' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Jerk'], mode='lines', name='Jerk (m/s³)', line=dict(color='#FF1493', width=2, dash='dot')), secondary_y=True)
-    if show_dynamic_sdlp:
+    if show_dynamic_sdlp and 'Dynamic_SDLP' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SDLP'], mode='lines', name='동적 SDLP (m)', line=dict(color='#20B2AA', width=2.5, dash='solid')), secondary_y=True)
 
-    # 랜드마크 및 구간 표시 (코드 생략, 이전 버전과 동일)
-    # ... (테이퍼 시점, 휴머노이드 위치 등 표시 로직 유지)
+    if show_blink and df_blink is not None:
+        blink_time_col = 'start timestamp [ns]' if 'start timestamp [ns]' in df_blink.columns else 'start timestamp'
+        if blink_time_col in df_blink.columns:
+            df_blink['Time_s'] = ((df_blink[blink_time_col] - sac_start_time) / 1e9) + time_offset if is_ns else (df_blink[blink_time_col] - sac_start_time) + time_offset
+            fig.add_trace(go.Scatter(x=df_blink['Time_s'], y=[-5] * len(df_blink), mode='markers', name='눈 깜빡임 발생', marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'), secondary_y=False)
 
-    fig.update_layout(title=f"[{custom_scenario_name}] 실시간 통합 데이터 분석 차트", xaxis_title="주행 시간 (초)", height=700, hovermode="x unified")
-    fig.update_yaxes(title_text="속도 / 시야각", secondary_y=False)
-    fig.update_yaxes(title_text="안정성 및 심층 분석 지표", secondary_y=True, showgrid=False)
-    st.plotly_chart(fig, use_container_width=True)
+    if show_lane_change and lane_change_count > 0:
+        for lc in filtered_lane_changes:
+            fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차로 변경")
 
-    # ---------------------------------------------------------
-    # 하단 통계 섹션 (이전 로직 유지 및 SDLP 요약 추가 가능)
-    # ---------------------------------------------------------
-    # ... (생략)
+    # 💡 [복구됨] 구간(Zone) 배경 표시
+    if show_zones and ds_dist_col:
+        work_zones = [
+            {"name": "🟢 주의구간", "start": 1000.0, "end": 2500.0, "color": "rgba(144, 238, 144, 0.15)"},
+            {"name": "🟡 완화구간 (테이퍼)", "start": 2500.0, "end": 2720.0, "color": "rgba(255, 165, 0, 0.15)"},
+            {"name": "🔴 작업구간", "start": 2720.0, "end": 3270.0, "color": "rgba(255, 0, 0, 0.15)"},
+            {"name": "⚫ 종결구간", "start": 3270.0, "end": 3300.0, "color": "rgba(128, 128, 128, 0.15)"}
+        ]
+        for zone in work_zones:
+            start_df = df_ds[df_ds[ds_dist_col] >= zone["start"]]
+            end_df = df_ds[df_ds[ds_dist_col] >= zone["end"]]
+            if not start_df.empty:
+                z_start_time = start_df.iloc[0]['Time_s']
+                z_end_time = end_df.iloc[0]['Time_s'] if not end_df.empty else df_ds['Time_s'].max()
+                if z_start_time < z_end_time:
+                    fig.add_trace(go.Scatter(
+                        x=[z_start_time, z_end_time, z_end_time, z_start_time, z_start_time], 
+                        y=[0, 0, max_y*1.1, max_y*1.1, 0], 
+                        fill='toself', fillcolor=zone["color"], mode='lines', line=dict(width=0),
+                        name=zone["name"], hoveron='fills', hoverinfo='text',
+                        text=f"<b>{zone['name']}</b><br>{zone['start']}m ~ {zone['end']}m", showlegend=False
