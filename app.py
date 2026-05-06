@@ -92,13 +92,15 @@ if data_loaded:
     show_saccade = st.sidebar.checkbox("👁️ 시선 이동 각도 (채워진 그래프)", value=True)
     show_blink = st.sidebar.checkbox("😌 눈 깜빡임 (하단 마커)", value=True)
     show_lane_change = st.sidebar.checkbox("🚧 차로 변경 궤적 하이라이트", value=True)
-    
-    # 💡 [수정] 동적 SGE 체크박스 기본값을 False로 변경
-    show_dynamic_sge = st.sidebar.checkbox("🧠 동적 시선 분산도(SGE) 꺾은선", value=False)
-    if show_dynamic_sge:
-        sge_window = st.sidebar.slider("SGE 산출 윈도우 크기 (과거 n초)", 1.0, 10.0, 3.0, 0.5)
-    
     time_offset = st.sidebar.slider("아이트래커 시간 오차 보정 (초)", -10.0, 10.0, 0.0, 0.1)
+
+    # 💡 [신규] 심층 인지 부하 동적 그래프 전용 섹션 통합
+    st.sidebar.markdown("---")
+    st.sidebar.header("🧠 심층 인지 부하 동적 그래프")
+    window_size = st.sidebar.slider("산출 윈도우 크기 (과거 n초 단위)", 1.0, 10.0, 3.0, 0.5)
+    show_dynamic_sge = st.sidebar.checkbox("👀 동적 시선 분산도(SGE) 꺾은선", value=False)
+    show_dynamic_steer = st.sidebar.checkbox("🔄 동적 조향 엔트로피 꺾은선", value=False)
+    show_dynamic_jerk = st.sidebar.checkbox("🚨 가속도 변화율(Jerk) 꺾은선", value=False)
 
     ds_dist_col = next((col for col in df_ds.columns if 'distance' in col.lower() or 'dist' in col.lower() or 'mileage' in col.lower()), None)
     
@@ -217,12 +219,13 @@ if data_loaded:
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
+    # 💡 [신규] 동적 SGE 산출
     if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns and 'Time_s' in df_fix.columns:
         sge_vals = []
         fix_t = df_fix['Time_s'].values
         fix_i = df_fix[fix_id_col].values
         for current_t in df_ds['Time_s']:
-            mask = (fix_t >= current_t - sge_window) & (fix_t <= current_t)
+            mask = (fix_t >= current_t - window_size) & (fix_t <= current_t)
             w_ids = fix_i[mask]
             if len(w_ids) > 0:
                 _, counts = np.unique(w_ids, return_counts=True)
@@ -231,6 +234,35 @@ if data_loaded:
             else:
                 sge_vals.append(0.0)
         df_ds['Dynamic_SGE'] = sge_vals
+
+    # 💡 [신규] 동적 조향 엔트로피 산출
+    if show_dynamic_steer:
+        target_steer_col = steer_col if steer_col else ds_offset_col
+        if target_steer_col and not df_ds[target_steer_col].isnull().all():
+            s_data = df_ds[target_steer_col].fillna(0)
+            x_1 = s_data.shift(1); x_2 = s_data.shift(2); x_3 = s_data.shift(3)
+            pred = x_1 + (x_1 - x_2) + 0.5 * ((x_1 - x_2) - (x_2 - x_3))
+            steer_errors = s_data - pred
+            
+            steer_ent_vals = []
+            time_vals = df_ds['Time_s'].values
+            err_vals = steer_errors.values
+            
+            for current_t in time_vals:
+                mask = (time_vals >= current_t - window_size) & (time_vals <= current_t) & ~np.isnan(err_vals)
+                w_err = err_vals[mask]
+                if len(w_err) > 10:
+                    bins = np.histogram_bin_edges(w_err, bins=9)
+                    p_steer, _ = np.histogram(w_err, bins=bins)
+                    p_steer = p_steer[p_steer > 0] / sum(p_steer)
+                    steer_ent_vals.append(-np.sum(p_steer * np.log2(p_steer)))
+                else:
+                    steer_ent_vals.append(0.0)
+            df_ds['Dynamic_Steer_Ent'] = steer_ent_vals
+            
+    # 💡 [신규] 동적 Jerk 산출
+    if show_dynamic_jerk:
+        df_ds['Dynamic_Jerk'] = y_accel.diff() / df_ds['Time_s'].diff()
 
     # ---------------------------------------------------------
     # 차트 그리기
@@ -251,8 +283,17 @@ if data_loaded:
     if show_saccade and sac_amp_col in df_sac.columns:
         fig.add_trace(go.Scatter(x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동', fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5)), secondary_y=False)
 
+    # 💡 동적 SGE 그래프
     if show_dynamic_sge and 'Dynamic_SGE' in df_ds.columns:
-        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name=f'동적 SGE ({sge_window}s)', line=dict(color='#FF8C00', width=2.5, dash='solid')), secondary_y=True)
+        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name=f'동적 SGE ({window_size}s)', line=dict(color='#FF8C00', width=2.5, dash='solid')), secondary_y=True)
+
+    # 💡 동적 조향 엔트로피 그래프
+    if show_dynamic_steer and 'Dynamic_Steer_Ent' in df_ds.columns:
+        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Steer_Ent'], mode='lines', name=f'동적 조향 엔트로피 ({window_size}s)', line=dict(color='#8A2BE2', width=2.5, dash='dash')), secondary_y=True)
+
+    # 💡 동적 가속도 변화율(Jerk) 그래프
+    if show_dynamic_jerk and 'Dynamic_Jerk' in df_ds.columns:
+        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Jerk'], mode='lines', name='Jerk (m/s³)', line=dict(color='#FF1493', width=2, dash='dot')), secondary_y=True)
 
     if show_blink and df_blink is not None:
         blink_time_col = 'start timestamp [ns]' if 'start timestamp [ns]' in df_blink.columns else 'start timestamp'
@@ -326,7 +367,7 @@ if data_loaded:
 
     fig.update_layout(title=f"[{custom_scenario_name}] 실시간 다중 레이어 분석 차트", xaxis_title="주행 시간 (초)", height=650, hovermode="x unified", legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor='rgba(255, 255, 255, 0.7)'))
     fig.update_yaxes(title_text="속도 (km/h) / 시야각 (deg)", secondary_y=False)
-    fig.update_yaxes(title_text="가속도, 조향 편차 & 동적 SGE", secondary_y=True, showgrid=False)
+    fig.update_yaxes(title_text="가속도, 조향 편차 & 인지 부하 데이터", secondary_y=True, showgrid=False)
     st.plotly_chart(fig, use_container_width=True)
 
     # ---------------------------------------------------------
