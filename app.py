@@ -307,7 +307,6 @@ if data_loaded:
     st.markdown("---")
     st.subheader(f"💡 '{custom_scenario_name}' 요약 통계")
     
-    # 💡 [핵심 반영 1] 요약 통계 최상단 데이터 탐색 (휴머노이드 인지 거리 계산용)
     humanoid_id = None
     if df_fix is not None:
         for oid, oname in objects_to_draw:
@@ -315,7 +314,6 @@ if data_loaded:
                 humanoid_id = oid
                 break
                 
-    # 💡 [핵심 반영 2] 5열 ➔ 6열 확장 및 휴머노이드 인지 거리(가시거리) 계산
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("총 주행 시간", f"{round(df_ds['Time_s'].max(), 1)} 초")
     c2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
@@ -380,7 +378,6 @@ if data_loaded:
                     
         if humanoid_id is not None:
             st.markdown("#### ⏱️ 인지 반응 분석 (휴머노이드 인지 ➔ 차로 변경)")
-            # 💡 [핵심 반영 3] 인지 거리 설명 강화
             st.caption("차량이 전방의 휴머노이드를 최초로 발견(인지)했을 때의 거리 간격을 도출하고, 인지 후 차로를 변경하기까지 소요된 운전자의 반응 시간과 이동 거리를 분석합니다.")
             
             raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
@@ -414,188 +411,133 @@ if data_loaded:
         
         with col_w1:
             st.markdown("#### 1. 차로 유지 편차 (SDLP) 및 조향 엔트로피")
-            st.caption("차량이 차로 중앙에서 좌우로 얼마나 비틀거렸는지, 핸들 조작이 얼마나 불규칙하고 급격했는지를 수치화하여 운전자의 당황(인지적 부하) 수준을 평가합니다.")
-            
             with st.container(border=True):
-                # SDLP 산출
                 sdlp_val = df_ds[ds_offset_col].std() if ds_offset_col and not df_ds[ds_offset_col].isnull().all() else 0.0
-                count_sdlp = len(df_ds[ds_offset_col].dropna()) if ds_offset_col else 0
                 st.markdown(f"**🔹 차로 유지 편차 (SDLP)**")
-                st.markdown(f"- **사용 데이터:** 전체 주행 구간의 `offsetFromLaneCenter` (차로 중심선과의 거리, 총 {count_sdlp}개 샘플)")
-                st.markdown(f"- **계산 방식:** 편차 데이터의 흩어짐 정도를 나타내는 표준편차(Standard Deviation) 산출")
                 st.info(f"**계산 결과 (SDLP):** {sdlp_val:.3f} m")
                 
                 st.divider()
                 
-                # Steering Entropy
                 target_steer_col = steer_col if steer_col else ds_offset_col
                 st.markdown(f"**🔹 조향 엔트로피 (Steering Entropy)**")
-                st.markdown(f"- **사용 데이터:** `steer` (핸들 조향각) 또는 편차 데이터")
-                st.markdown(f"- **계산 방식:** 2차 테일러 전개(2nd-order Taylor expansion)를 이용해 과거 3초간의 패턴으로 현재 조작을 예측한 뒤, 실제 조작값과의 오차 분포를 섀넌의 엔트로피 공식에 적용")
                 if target_steer_col and not df_ds[target_steer_col].isnull().all():
                     s_data = df_ds[target_steer_col].fillna(0)
-                    x_1 = s_data.shift(1)
-                    x_2 = s_data.shift(2)
-                    x_3 = s_data.shift(3)
+                    x_1 = s_data.shift(1); x_2 = s_data.shift(2); x_3 = s_data.shift(3)
                     pred = x_1 + (x_1 - x_2) + 0.5 * ((x_1 - x_2) - (x_2 - x_3))
                     error = (s_data - pred).dropna()
-                    
                     if len(error) > 10:
                         bins = np.histogram_bin_edges(error, bins=9)
                         p_steer, _ = np.histogram(error, bins=bins)
                         p_steer = p_steer[p_steer > 0] / sum(p_steer)
                         steering_entropy = -sum(p_steer * np.log2(p_steer))
-                        st.markdown(f"- **실제 대입 데이터:** 과거 3초 데이터를 이용해 도출된 {len(error)}개의 예측 오차(Error) 샘플 분포")
                         st.success(f"**계산 결과 (조향 엔트로피):** {steering_entropy:.3f}")
-                    else:
-                        st.warning("데이터가 부족하여 계산할 수 없습니다.")
-                else:
-                    st.warning("조향 데이터가 존재하지 않습니다.")
+                    else: st.warning("데이터 부족")
+                else: st.warning("조향 데이터 없음")
 
             st.markdown("#### 2. 가속도 변화율 (Jerk)")
-            st.caption("가속도가 시간에 따라 얼마나 급격히 변했는지 분석하여, 놀람으로 인한 '급제동'이나 '급가속'이 발생한 횟수를 정량화합니다.")
             with st.container(border=True):
                 jerk = y_accel.diff() / df_ds['Time_s'].diff()
                 max_jerk = jerk.abs().max()
                 harsh_ratio = (jerk.abs() > 2.0).sum() / len(jerk.dropna()) * 100
-                st.markdown("- **사용 데이터:** `accel_x` (종방향 가속도) 또는 차량 속도를 시간에 대해 미분한 값")
-                st.markdown(r"- **계산 공식:** $Jerk = \frac{\Delta a}{\Delta t}$ (가속도 변화량 / 시간 변화량)")
-                st.markdown(f"- **실제 대입 데이터:** 도출된 {len(jerk.dropna())}개의 저크 샘플 중, 임계치(2.0 $m/s^3$)를 초과한 조작의 비율 산출")
                 st.warning(f"**최대 저크 (Max Jerk):** {max_jerk:.2f} $m/s^3$\n\n**급조작(위험) 비율:** {harsh_ratio:.2f} %")
 
         with col_w2:
             st.markdown("#### 3. 시선 분산도 (Gaze Entropy)")
-            st.caption("운전자의 시선이 전방(도로)에 집중되었는지, 아니면 갑자기 등장한 로봇이나 주변 환경으로 인해 산만하게 흩어졌는지를 수학적으로 입증합니다.")
             with st.container(border=True):
-                st.markdown("- **사용 데이터:** `fixations.csv`의 객체 응시 기록")
-                st.markdown("- **계산 방식:** 섀넌의 정보 엔트로피 공식을 활용하여, 시선이 여러 객체로 분산될수록 결과값이 높아지도록 확률 모델 적용")
-                st.latex(r"SGE = -\sum_{i=1}^{n} p_i \log_2 p_i")
-                
                 if df_fix is not None and fix_id_col in df_fix.columns:
                     p_gaze = df_fix[fix_id_col].value_counts(normalize=True).values
                     p_gaze = p_gaze[p_gaze > 0]
                     gaze_entropy = -sum(p_gaze * np.log2(p_gaze))
-                    
-                    if len(p_gaze) > 5:
-                        prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze[:5]]) + f" ... (외 {len(p_gaze)-5}개)"
-                    else:
-                        prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze])
-                        
-                    st.markdown(f"- **실제 대입 데이터:** 총 {len(p_gaze)}개 주시 타겟의 확률 분포 $p_i$ = [{prob_str}]")
+                    prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze[:5]]) + (f" ... (외 {len(p_gaze)-5}개)" if len(p_gaze)>5 else "")
+                    st.markdown(f"- **실제 대입 데이터:** 총 {len(p_gaze)}개 타겟의 확률 분포 $p_i$ = [{prob_str}]")
                     st.info(f"**계산 결과 (SGE):** {gaze_entropy:.3f}")
-                else:
-                    st.warning("시선 고정(Fixation) 데이터가 없습니다.")
+                else: st.warning("시선 고정 데이터 없음")
 
             st.markdown("#### 4. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
-            st.caption("전방의 물리적 장애물(휴머노이드)을 발견했을 때, 현재 속도를 유지할 경우 충돌까지 남은 시간과 안전하게 제동하기 위한 여유 거리를 평가하는 대표적인 교통안전대체지표(SSM)입니다.")
             with st.container(border=True):
-                st.markdown("- **사용 데이터:** 차량 `speed`, `distance`, 감지된 `휴머노이드 고정 위치(m)`")
-                
                 if actual_h_pos is not None and ds_dist_col:
                     approach_df = df_ds[df_ds[ds_dist_col] < actual_h_pos].copy()
                     if not approach_df.empty:
-                        # 파생 변수 계산
                         approach_df['Dist_to_H'] = actual_h_pos - approach_df[ds_dist_col]
                         approach_df['V_ms'] = approach_df[ds_speed_col] / 3.6
                         approach_df['TTC'] = approach_df['Dist_to_H'] / approach_df['V_ms'].replace(0, 0.001)
-                        
-                        valid_ttc = approach_df.loc[approach_df['V_ms'] > 1.0]
-                        min_ttc_idx = valid_ttc['TTC'].idxmin() if not valid_ttc.empty else None
+                        min_ttc_idx = approach_df.loc[approach_df['V_ms'] > 1.0, 'TTC'].idxmin()
                         
                         tr, f, g = 2.5, 0.8, 9.81
                         approach_df['Stop_Dist'] = approach_df['V_ms']*tr + (approach_df['V_ms']**2)/(2*g*f)
                         approach_df['SDI'] = approach_df['Stop_Dist'] / approach_df['Dist_to_H'].replace(0, 0.001)
-                        max_sdi_idx = approach_df['SDI'].idxmax() if not approach_df.empty else None
-                        
-                        st.markdown("- **기본 계산 구조:**")
-                        st.markdown(f"  - **남은 거리:** 휴머노이드 위치({actual_h_pos}m) $-$ 차량의 현재 위치(m)")
-                        st.markdown("  - **TTC:** 남은 거리 / 현재 속도($m/s$)")
-                        st.markdown("  - **SDI:** 필요 제동 거리(공주거리 포함) / 남은 거리")
-                        st.markdown("---")
+                        max_sdi_idx = approach_df['SDI'].idxmax()
                         
                         if min_ttc_idx is not None:
-                            ttc_dist = approach_df.loc[min_ttc_idx, 'Dist_to_H']
-                            ttc_v_kmh = approach_df.loc[min_ttc_idx, ds_speed_col]
-                            ttc_v_ms = approach_df.loc[min_ttc_idx, 'V_ms']
-                            min_ttc = approach_df.loc[min_ttc_idx, 'TTC']
-                            
-                            st.markdown(f"**[⏱️ 최소 TTC 발생 시점 산출 내역]**")
-                            st.markdown(f"- **대입된 현재 속도:** {ttc_v_kmh:.1f} km/h (약 {ttc_v_ms:.2f} m/s)")
-                            st.markdown(f"- **대입된 남은 거리:** {ttc_dist:.2f} m")
-                            st.latex(fr"TTC = \frac{{{ttc_dist:.2f}}}{{{ttc_v_ms:.2f}}} = {min_ttc:.2f} \text{{ 초}}")
-                            st.error(f"**최소 충돌 예상 시간 (Min TTC): {min_ttc:.2f} 초**")
-                            
+                            st.error(f"**최소 충돌 예상 시간 (Min TTC): {approach_df.loc[min_ttc_idx, 'TTC']:.2f} 초**")
                         if max_sdi_idx is not None:
-                            sdi_dist = approach_df.loc[max_sdi_idx, 'Dist_to_H']
-                            sdi_v_kmh = approach_df.loc[max_sdi_idx, ds_speed_col]
-                            sdi_v_ms = approach_df.loc[max_sdi_idx, 'V_ms']
-                            sdi_stop_dist = approach_df.loc[max_sdi_idx, 'Stop_Dist']
-                            max_sdi = approach_df.loc[max_sdi_idx, 'SDI']
-                            
-                            st.divider()
-                            st.markdown(f"**[🛑 최대 SDI 발생 시점 산출 내역]**")
-                            st.markdown(f"- **대입된 현재 속도:** {sdi_v_kmh:.1f} km/h (약 {sdi_v_ms:.2f} m/s)")
-                            st.markdown(f"- **대입된 남은 거리:** {sdi_dist:.2f} m")
-                            st.markdown(f"- **계산된 필요 정지 거리:** {sdi_stop_dist:.2f} m")
-                            st.latex(fr"SDI = \frac{{{sdi_stop_dist:.2f}}}{{{sdi_dist:.2f}}} = {max_sdi:.3f}")
-                            st.error(f"**최대 정지 거리 지수 (Max SDI): {max_sdi:.3f}** (1 초과 시 추돌 위험)")
-                    else:
-                        st.warning("휴머노이드 접근 전 주행 데이터가 부족합니다.")
-                else:
-                    st.warning("휴머노이드 물리적 위치 정보가 없어 계산할 수 없습니다.")
+                            st.error(f"**최대 정지 거리 지수 (Max SDI): {approach_df.loc[max_sdi_idx, 'SDI']:.3f}**")
+                    else: st.warning("접근 데이터 부족")
 
     # ---------------------------------------------------------
-    # 5. 기존 안전성 평가 (SSD & 구간 속도)
+    # 5. [강화] 시나리오 안전성 평가 (SSD & 구간 속도)
     # ---------------------------------------------------------
     st.markdown("---")
-    st.subheader("🛑 시나리오 안전성 평가 (SSD & 구간 속도)")
-    with st.expander("🛠️ 교통 안전성 평가 데이터 및 결과 보기", expanded=True):
-        auto_ta, auto_tb, auto_v, auto_l, auto_d = 0.0, 6.0, 90.0, 150.0, 120.0
+    st.subheader("🛑 시나리오 안전성 평가 (이중 SSD & 구간 속도)")
+    
+    with st.expander("🛠️ SSD 이중 검증 및 구간 속도 결과 보기", expanded=True):
+        # 데이터 자동 추출
+        auto_ta, auto_tb, v_a, v_b, dist_a, dist_b = 0.0, 6.0, 90.0, 90.0, 1000.0, 1150.0
         
         target_id_ssd = None
         if objects_to_draw:
             for oid, oname in objects_to_draw:
-                if "휴머노이드" in oname:
-                    target_id_ssd = oid
-                    break
-            if target_id_ssd is None:
-                target_id_ssd, _ = objects_to_draw[0]
+                if "휴머노이드" in oname: target_id_ssd = oid; break
+            if target_id_ssd is None: target_id_ssd, _ = objects_to_draw[0]
 
         if df_fix is not None and target_id_ssd is not None and lane_change_count > 0 and ds_dist_col:
-            raw_t = df_fix[df_fix[fix_id_col] == target_id_ssd].iloc[0][fix_time_col]
-            auto_ta = ((raw_t - sac_start_time) / 1e9) + time_offset if raw_t > 1e12 else (raw_t - sac_start_time) + time_offset
+            # 인지 시점(t_a) 데이터
+            raw_ta = df_fix[df_fix[fix_id_col] == target_id_ssd].iloc[0][fix_time_col]
+            auto_ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+            row_a = df_ds.iloc[(df_ds['Time_s'] - auto_ta).abs().argsort()[:1]]
+            v_a = row_a[ds_speed_col].values[0]; dist_a = row_a[ds_dist_col].values[0]
+            
+            # 차로 변경 시점(t_b) 데이터
             auto_tb = filtered_lane_changes[0]
-            auto_v = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]][ds_speed_col].values[0]
-            dist_b = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]][ds_dist_col].values[0]
-            dist_a = df_ds.iloc[(df_ds['Time_s'] - auto_ta).abs().argsort()[:1]][ds_dist_col].values[0]
+            row_b = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]]
+            v_b = row_b[ds_speed_col].values[0]; dist_b = row_b[ds_dist_col].values[0]
+            
             auto_l = abs(dist_b - dist_a)
-            auto_d = max(0.0, 2500.0 - dist_b)
+            d_a = max(0.0, 2500.0 - dist_a)
+            d_b = max(0.0, 2500.0 - dist_b)
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("#### 📥 추출된 주행 파라미터")
-            v_val = st.number_input("차로 변경 시점 속도 V (km/h)", value=float(auto_v), format="%.2f")
-            d_val = st.number_input("테이퍼 시점과의 거리 D (m)", value=float(auto_d), format="%.2f")
-            l_val = st.number_input("구간 길이 L (m) [t_a ~ t_b 이동거리]", value=float(auto_l), format="%.2f")
-            ta_val = st.number_input("휴머노이드 인지 시점 t_a (초)", value=float(auto_ta), format="%.2f")
-            tb_val = st.number_input("차로 변경 시작 시점 t_b (초)", value=float(auto_tb), format="%.2f")
+        # UI 레이아웃 분리
+        col_ssd1, col_ssd2 = st.columns(2)
+        f_val, s_val, tr_val = 0.8, 0.0, 2.5
+        
+        with col_ssd1:
+            st.markdown("### 🔵 [초기 안전성] 인지 시점 기준")
+            st.caption("로봇을 발견한 최초 순간, 물리적으로 테이퍼 전까지 멈출 수 있는 제동 거리가 확보되는지 검증합니다.")
+            v_val_a = st.number_input("인지 시점 속도 V_a (km/h)", value=float(v_a), format="%.2f", key="va")
+            d_val_a = st.number_input("인지 시점 여유거리 D_a (m)", value=float(d_a), format="%.2f", key="da")
             
-        with c2:
-            st.markdown("#### 📊 평가 결과 및 계산 과정")
-            f_val, s_val, tr_val = 0.8, 0.0, 2.5
-            ssd_val = (v_val**2) / (254 * (f_val + s_val)) + tr_val * (v_val / 3.6)
+            ssd_a = (v_val_a**2) / (254 * (f_val + s_val)) + tr_val * (v_val_a / 3.6)
+            st.latex(r"SSD_a = \frac{V_a^2}{254 \times (f + s)} + t_r \times \frac{V_a}{3.6}")
+            st.latex(fr"= \frac{{{v_val_a:.1f}^2}}{{254 \times 0.8}} + 2.5 \times \frac{{{v_val_a:.1f}}}{{3.6}} = {ssd_a:.2f}m")
+            st.info(f"판정: **{'🟢 Safety' if ssd_a <= d_val_a else '🔴 Danger'}** (남은 {d_val_a:.1f}m 대비 필요 {ssd_a:.1f}m)")
+
+        with col_ssd2:
+            st.markdown("### 🟠 [실행 안전성] 차로 변경 시점 기준")
+            st.caption("실제 회피 기동(차로 변경)을 시작하는 순간의 주행 상태가 안전 마진을 만족하는지 검증합니다.")
+            v_val_b = st.number_input("변경 시점 속도 V_b (km/h)", value=float(v_b), format="%.2f", key="vb")
+            d_val_b = st.number_input("변경 시점 여유거리 D_b (m)", value=float(d_b), format="%.2f", key="db")
             
-            st.markdown("**1. 안전정지거리 (SSD)**")
-            st.latex(r"SSD = \frac{V^2}{254 \times (f + s)} + t_r \times \frac{V}{3.6}")
-            st.latex(fr"= \frac{{{v_val:.1f}^2}}{{254 \times ({f_val} + {s_val})}} + {tr_val} \times \frac{{{v_val:.1f}}}{{3.6}}")
-            st.info(f"계산 결과: **{ssd_val:.2f} m** ➔ **{'🟢 Safety' if ssd_val <= d_val else '🔴 Danger'}**")
-            
-            st.markdown("**2. 구간 속도**")
-            st.caption("💡 참고: 구간 속도는 휴머노이드 최초 인지 시점(t_a)부터 차로 변경 시작 시점(t_b)까지 이동한 구간의 평균 속도입니다.")
-            st.latex(r"구간 속도 = \frac{L}{t_b - t_a} \times 3.6")
-            if tb_val > ta_val:
-                sms_val = (l_val / (tb_val - ta_val)) * 3.6
-                st.latex(fr"= \frac{{{l_val:.1f}}}{{{tb_val:.2f} - {ta_val:.2f}}} \times 3.6")
-                st.info(f"계산 결과: **{sms_val:.2f} km/h** ➔ **{'🟢 Safety' if sms_val <= 80 else '🔴 Danger'}**")
-            else:
-                st.error("시간 오류: 인지 시점(t_a)이 차로 변경 시작 시점(t_b)보다 빠를 수 없습니다.")
+            ssd_b = (v_val_b**2) / (254 * (f_val + s_val)) + tr_val * (v_val_b / 3.6)
+            st.latex(r"SSD_b = \frac{V_b^2}{254 \times (f + s)} + t_r \times \frac{V_b}{3.6}")
+            st.latex(fr"= \frac{{{v_val_b:.1f}^2}}{{254 \times 0.8}} + 2.5 \times \frac{{{v_val_b:.1f}}}{{3.6}} = {ssd_b:.2f}m")
+            st.info(f"판정: **{'🟢 Safety' if ssd_b <= d_val_b else '🔴 Danger'}** (남은 {d_val_b:.1f}m 대비 필요 {ssd_b:.1f}m)")
+
+        st.divider()
+        st.markdown("### 🏁 2. 구간 속도 (SMS)")
+        st.caption("💡 참고: 구간 속도는 휴머노이드 최초 인지 시점(t_a)부터 차로 변경 시작 시점(t_b)까지 이동한 구간의 평균 속도입니다.")
+        l_val = st.number_input("구간 길이 L (m)", value=float(auto_l), format="%.2f")
+        if auto_tb > auto_ta:
+            sms_val = (l_val / (auto_tb - auto_ta)) * 3.6
+            st.latex(fr"SMS = \frac{{{l_val:.1f}}}{{{auto_tb:.2f} - {auto_ta:.2f}}} \times 3.6 = {sms_val:.2f} km/h")
+            st.info(f"판정 결과: **{sms_val:.2f} km/h** ➔ **{'🟢 Safety' if sms_val <= 80 else '🔴 Danger'}**")
+        else: st.error("시간 오류")
