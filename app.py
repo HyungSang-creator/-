@@ -92,6 +92,12 @@ if data_loaded:
     show_saccade = st.sidebar.checkbox("👁️ 시선 이동 각도 (채워진 그래프)", value=True)
     show_blink = st.sidebar.checkbox("😌 눈 깜빡임 (하단 마커)", value=True)
     show_lane_change = st.sidebar.checkbox("🚧 차로 변경 궤적 하이라이트", value=True)
+    
+    # 💡 [신규] 동적 SGE 그래프 토글 및 슬라이더 추가
+    show_dynamic_sge = st.sidebar.checkbox("🧠 동적 시선 분산도(SGE) 꺾은선", value=True)
+    if show_dynamic_sge:
+        sge_window = st.sidebar.slider("SGE 산출 윈도우 크기 (과거 n초)", 1.0, 10.0, 3.0, 0.5)
+    
     time_offset = st.sidebar.slider("아이트래커 시간 오차 보정 (초)", -10.0, 10.0, 0.0, 0.1)
 
     ds_dist_col = next((col for col in df_ds.columns if 'distance' in col.lower() or 'dist' in col.lower() or 'mileage' in col.lower()), None)
@@ -184,6 +190,11 @@ if data_loaded:
     is_ns = df_sac[sac_time_col].max() > 1e12
     df_sac['Time_s'] = ((df_sac[sac_time_col] - sac_start_time) / 1e9) + time_offset if is_ns else (df_sac[sac_time_col] - sac_start_time) + time_offset
 
+    # 💡 [신규] df_fix의 Time_s를 전역적으로 계산 (동적 SGE 그래프용)
+    if df_fix is not None and fix_time_col is not None:
+        is_fix_ns = df_fix[fix_time_col].max() > 1e12
+        df_fix['Time_s'] = ((df_fix[fix_time_col] - sac_start_time) / 1e9) + time_offset if is_fix_ns else (df_fix[fix_time_col] - sac_start_time) + time_offset
+
     lane_change_count = 0
     filtered_lane_changes = []
     
@@ -207,6 +218,23 @@ if data_loaded:
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
+    # 💡 [신규] 동적 SGE (Sliding Window) 계산
+    if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns and 'Time_s' in df_fix.columns:
+        sge_vals = []
+        fix_t = df_fix['Time_s'].values
+        fix_i = df_fix[fix_id_col].values
+        for current_t in df_ds['Time_s']:
+            # 현재 시간 기준으로 과거 n초 윈도우 마스킹
+            mask = (fix_t >= current_t - sge_window) & (fix_t <= current_t)
+            w_ids = fix_i[mask]
+            if len(w_ids) > 0:
+                _, counts = np.unique(w_ids, return_counts=True)
+                p = counts / counts.sum()
+                sge_vals.append(-np.sum(p * np.log2(p)))
+            else:
+                sge_vals.append(0.0)
+        df_ds['Dynamic_SGE'] = sge_vals
+
     # ---------------------------------------------------------
     # 차트 그리기
     # ---------------------------------------------------------
@@ -225,6 +253,10 @@ if data_loaded:
 
     if show_saccade and sac_amp_col in df_sac.columns:
         fig.add_trace(go.Scatter(x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동', fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5)), secondary_y=False)
+
+    # 💡 [신규] 동적 SGE 꺾은선 차트 추가 (Secondary Y축 사용)
+    if show_dynamic_sge and 'Dynamic_SGE' in df_ds.columns:
+        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name=f'동적 SGE ({sge_window}s)', line=dict(color='#FF8C00', width=2.5, dash='solid')), secondary_y=True)
 
     if show_blink and df_blink is not None:
         blink_time_col = 'start timestamp [ns]' if 'start timestamp [ns]' in df_blink.columns else 'start timestamp'
@@ -298,7 +330,7 @@ if data_loaded:
 
     fig.update_layout(title=f"[{custom_scenario_name}] 실시간 다중 레이어 분석 차트", xaxis_title="주행 시간 (초)", height=650, hovermode="x unified", legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor='rgba(255, 255, 255, 0.7)'))
     fig.update_yaxes(title_text="속도 (km/h) / 시야각 (deg)", secondary_y=False)
-    fig.update_yaxes(title_text="가속도 & 조향 편차", secondary_y=True, showgrid=False)
+    fig.update_yaxes(title_text="가속도, 조향 편차 & 동적 SGE", secondary_y=True, showgrid=False)
     st.plotly_chart(fig, use_container_width=True)
 
     # ---------------------------------------------------------
@@ -442,7 +474,7 @@ if data_loaded:
                 st.warning(f"**최대 저크 (Max Jerk):** {max_jerk:.2f} $m/s^3$\n\n**급조작(위험) 비율:** {harsh_ratio:.2f} %")
 
         with col_w2:
-            st.markdown("#### 3. 시선 분산도 (Gaze Entropy)")
+            st.markdown("#### 3. 누적 시선 분산도 (전체 Gaze Entropy)")
             with st.container(border=True):
                 if df_fix is not None and fix_id_col in df_fix.columns:
                     p_gaze = df_fix[fix_id_col].value_counts(normalize=True).values
@@ -450,7 +482,7 @@ if data_loaded:
                     gaze_entropy = -sum(p_gaze * np.log2(p_gaze))
                     prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze[:5]]) + (f" ... (외 {len(p_gaze)-5}개)" if len(p_gaze)>5 else "")
                     st.markdown(f"- **실제 대입 데이터:** 총 {len(p_gaze)}개 타겟의 확률 분포 $p_i$ = [{prob_str}]")
-                    st.info(f"**계산 결과 (SGE):** {gaze_entropy:.3f}")
+                    st.info(f"**계산 결과 (전체 구간 SGE):** {gaze_entropy:.3f}")
                 else: st.warning("시선 고정 데이터 없음")
 
             st.markdown("#### 4. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
@@ -491,13 +523,11 @@ if data_loaded:
             if target_id_ssd is None: target_id_ssd, _ = objects_to_draw[0]
 
         if df_fix is not None and target_id_ssd is not None and lane_change_count > 0 and ds_dist_col:
-            # 인지 시점(t_a) 데이터
             raw_ta = df_fix[df_fix[fix_id_col] == target_id_ssd].iloc[0][fix_time_col]
             auto_ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
             row_a = df_ds.iloc[(df_ds['Time_s'] - auto_ta).abs().argsort()[:1]]
             v_a = row_a[ds_speed_col].values[0]; dist_a = row_a[ds_dist_col].values[0]
             
-            # 차로 변경 시점(t_b) 데이터
             auto_tb = filtered_lane_changes[0]
             row_b = df_ds.iloc[(df_ds['Time_s'] - auto_tb).abs().argsort()[:1]]
             v_b = row_b[ds_speed_col].values[0]; dist_b = row_b[ds_dist_col].values[0]
@@ -506,7 +536,6 @@ if data_loaded:
             d_a = max(0.0, 2500.0 - dist_a)
             d_b = max(0.0, 2500.0 - dist_b)
 
-        # UI 레이아웃 분리
         col_ssd1, col_ssd2 = st.columns(2)
         f_val, s_val, tr_val = 0.8, 0.0, 2.5
         
