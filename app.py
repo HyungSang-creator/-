@@ -98,6 +98,9 @@ if data_loaded:
     st.sidebar.header("🧠 심층 분석 동적 그래프")
     window_size = st.sidebar.slider("산출 윈도우 크기 (과거 n초)", 1.0, 10.0, 3.0, 0.5)
     
+    # 💡 [신규] 스무딩 필터 강도 조절 슬라이더
+    smoothing_level = st.sidebar.slider("📉 데이터 스무딩 강도 (노이즈 제거)", 1, 20, 5, help="값이 클수록 그래프가 부드러워지며 경향성이 뚜렷해집니다.")
+    
     st.sidebar.subheader("👁️ 인지/주의력 지표")
     show_dynamic_sge = st.sidebar.checkbox("👀 동적 시선 분산도(SGE)", value=False)
     show_dynamic_steer = st.sidebar.checkbox("🔄 동적 조향 엔트로피", value=False)
@@ -220,7 +223,7 @@ if data_loaded:
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
-    # 동적 지표 계산
+    # 💡 동적 지표 계산 (윈도우 적용)
     time_vals = df_ds['Time_s'].values
 
     if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns:
@@ -267,6 +270,17 @@ if data_loaded:
             else: sdlp_vals.append(0.0)
         df_ds['Dynamic_SDLP'] = sdlp_vals
 
+    # 💡 [신규] Smoothing (이동 평균) 적용
+    if smoothing_level > 1:
+        if 'Dynamic_SGE' in df_ds.columns:
+            df_ds['Dynamic_SGE'] = df_ds['Dynamic_SGE'].rolling(window=smoothing_level, min_periods=1).mean()
+        if 'Dynamic_Steer_Ent' in df_ds.columns:
+            df_ds['Dynamic_Steer_Ent'] = df_ds['Dynamic_Steer_Ent'].rolling(window=smoothing_level, min_periods=1).mean()
+        if 'Dynamic_Jerk' in df_ds.columns:
+            df_ds['Dynamic_Jerk'] = df_ds['Dynamic_Jerk'].rolling(window=smoothing_level, min_periods=1).mean()
+        if 'Dynamic_SDLP' in df_ds.columns:
+            df_ds['Dynamic_SDLP'] = df_ds['Dynamic_SDLP'].rolling(window=smoothing_level, min_periods=1).mean()
+
     # ---------------------------------------------------------
     # 차트 그리기
     # ---------------------------------------------------------
@@ -288,14 +302,10 @@ if data_loaded:
 
     if show_dynamic_sge and 'Dynamic_SGE' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name='동적 SGE', line=dict(color='#FF8C00', width=2.5)), secondary_y=True)
-        
-    # 💡 [수정] 동적 조향 엔트로피 dash='solid'로 변경하여 시인성 개선
     if show_dynamic_steer and 'Dynamic_Steer_Ent' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Steer_Ent'], mode='lines', name='동적 조향 엔트로피', line=dict(color='#8A2BE2', width=2.5, dash='solid')), secondary_y=True)
-        
     if show_dynamic_jerk and 'Dynamic_Jerk' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Jerk'], mode='lines', name='Jerk (m/s³)', line=dict(color='#FF1493', width=2, dash='dot')), secondary_y=True)
-        
     if show_dynamic_sdlp and 'Dynamic_SDLP' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SDLP'], mode='lines', name='동적 SDLP (m)', line=dict(color='#20B2AA', width=2.5, dash='solid')), secondary_y=True)
 
@@ -375,7 +385,21 @@ if data_loaded:
     st.plotly_chart(fig, use_container_width=True)
 
     # ---------------------------------------------------------
-    # [💡 신규] 평가용 기준 데이터 (t_a, t_b) 전역 추출
+    # [💡 신규] 스무딩(필터) 원리 설명 Expander
+    # ---------------------------------------------------------
+    with st.expander("💡 데이터 스무딩(노이즈 제거) 원리 안내", expanded=False):
+        st.markdown("""
+        **Q. 왜 그래프를 다듬어야(Smoothing) 하나요?**
+        차량 시뮬레이터나 아이트래커의 원시 데이터(Raw Data)는 프레임 단위의 미세한 센서 떨림을 포함하고 있습니다. 특히 가속도 변화율(Jerk)처럼 미분을 거친 데이터는 오차가 수십 배 증폭되어 수학적 '미분 폭발'을 일으키며 지진계처럼 요동치게 됩니다.
+        
+        **Q. 이동 평균 필터(Moving Average Filter)란 무엇인가요?**
+        현재 대시보드에 적용된 스무딩 기술은 데이터를 시간 순서대로 훑어가며 주변 이웃 데이터들과의 '평균'을 내어 선을 잇는 방식입니다.
+        * **강도를 높일수록(윈도우 증가):** 자잘하고 의미 없는 뾰족한 가시(High-frequency noise)들이 깎여 나가고, 운전자의 진짜 반응을 나타내는 거대한 '산봉우리(Trend)'가 모습을 드러냅니다.
+        * **해석:** 스무딩 처리 후 SGE나 조향 엔트로피 그래프가 부드러운 언덕 모양으로 솟아올랐다면, 그 구간이 바로 운전자가 시각적/인지적 패닉을 겪은 **유의미한 인지 부하 구간**입니다.
+        """)
+
+    # ---------------------------------------------------------
+    # [평가용 기준 데이터 (t_a, t_b) 전역 추출]
     # ---------------------------------------------------------
     humanoid_id = None
     if df_fix is not None:
