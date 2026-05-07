@@ -288,10 +288,14 @@ if data_loaded:
 
     if show_dynamic_sge and 'Dynamic_SGE' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name='동적 SGE', line=dict(color='#FF8C00', width=2.5)), secondary_y=True)
+        
+    # 💡 [수정] 동적 조향 엔트로피 dash='solid'로 변경하여 시인성 개선
     if show_dynamic_steer and 'Dynamic_Steer_Ent' in df_ds.columns:
-        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Steer_Ent'], mode='lines', name='동적 조향 엔트로피', line=dict(color='#8A2BE2', width=2.5, dash='dash')), secondary_y=True)
+        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Steer_Ent'], mode='lines', name='동적 조향 엔트로피', line=dict(color='#8A2BE2', width=2.5, dash='solid')), secondary_y=True)
+        
     if show_dynamic_jerk and 'Dynamic_Jerk' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Jerk'], mode='lines', name='Jerk (m/s³)', line=dict(color='#FF1493', width=2, dash='dot')), secondary_y=True)
+        
     if show_dynamic_sdlp and 'Dynamic_SDLP' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SDLP'], mode='lines', name='동적 SDLP (m)', line=dict(color='#20B2AA', width=2.5, dash='solid')), secondary_y=True)
 
@@ -526,7 +530,6 @@ if data_loaded:
                     st.info(f"**계산 결과 (전체 구간 SGE):** {gaze_entropy:.3f}")
                 else: st.warning("시선 고정 데이터 없음")
 
-            # 💡 [신규 개편] TTC 및 SDI 산출 (테이퍼 타겟, t_a/t_b 분리)
             st.markdown("#### 4. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
             with st.container(border=True):
                 st.markdown("- **기준점:** 휴머노이드 인지 시점($t_a$) 및 차로 변경 시점($t_b$)에서 2500m 테이퍼까지 남은 여유 거리 기준 산출")
@@ -569,7 +572,6 @@ if data_loaded:
         col_ssd1, col_ssd2 = st.columns(2)
         f_val, s_val, tr_val = 0.8, 0.0, 2.5
         
-        # UI Default fallback if values are missing
         ui_va = eval_va if eval_va is not None else 90.0
         ui_vb = eval_vb if eval_vb is not None else 90.0
         ui_da = max(0.0, 2500.0 - eval_dista) if eval_dista is not None else 1500.0
