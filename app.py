@@ -17,7 +17,7 @@ st.markdown("서버에 저장된 시나리오를 불러오거나, 새로운 데�
 # [핵심 함수 1] 폴더 내 파일 자동 매칭
 # ---------------------------------------------------------
 def find_files_in_folder(folder_path):
-    ds_file_path, sac_file_path, blink_file_path, fix_file_path, map_file_path = None, None, None, None, None
+    ds_file_path, sac_file_path, blink_file_path, fix_file_path, map_file_path, gaze_file_path = None, None, None, None, None, None
     for filename in os.listdir(folder_path):
         lower_name = filename.lower()
         if lower_name.endswith('.csv'):
@@ -27,11 +27,13 @@ def find_files_in_folder(folder_path):
                 blink_file_path = os.path.join(folder_path, filename)
             elif 'fixation' in lower_name:
                 fix_file_path = os.path.join(folder_path, filename)
+            elif 'gaze' in lower_name:
+                gaze_file_path = os.path.join(folder_path, filename)
             elif 'map' in lower_name or 'name' in lower_name:
                 map_file_path = os.path.join(folder_path, filename)
             elif '_' in lower_name and 'world' not in lower_name:
                 ds_file_path = os.path.join(folder_path, filename)
-    return ds_file_path, sac_file_path, blink_file_path, fix_file_path, map_file_path
+    return ds_file_path, sac_file_path, blink_file_path, fix_file_path, map_file_path, gaze_file_path
 
 # ---------------------------------------------------------
 # 1. 사이드바: 데이터 소스 선택
@@ -40,7 +42,7 @@ st.sidebar.header("📁 1. 데이터 소스 선택")
 data_mode = st.sidebar.radio("어떤 방식으로 데이터를 분석할까요?", ["💾 서버에 내장된 시나리오 불러오기", "📤 내 PC에서 직접 파일 업로드"])
 st.sidebar.markdown("---")
 
-df_ds, df_sac, df_blink, df_fix, df_map = None, None, None, None, None
+df_ds, df_sac, df_blink, df_fix, df_map, df_gaze = None, None, None, None, None, None
 data_loaded = False
 current_ds_filename = ""
 selected_folder = ""
@@ -50,13 +52,14 @@ if data_mode == "💾 서버에 내장된 시나리오 불러오기":
     folder_options.sort()
     if len(folder_options) > 0:
         selected_folder = st.sidebar.selectbox("분석할 시나리오 폴더 선택:", folder_options)
-        ds_path, sac_path, blink_path, fix_path, map_path = find_files_in_folder(selected_folder)
+        ds_path, sac_path, blink_path, fix_path, map_path, gaze_path = find_files_in_folder(selected_folder)
         if ds_path and sac_path:
             df_ds = pd.read_csv(ds_path)
             df_sac = pd.read_csv(sac_path)
             df_blink = pd.read_csv(blink_path) if blink_path else None
             df_fix = pd.read_csv(fix_path) if fix_path else None
             df_map = pd.read_csv(map_path) if map_path else None
+            df_gaze = pd.read_csv(gaze_path) if gaze_path else None
             current_ds_filename = os.path.basename(ds_path)
             data_loaded = True
         else:
@@ -66,12 +69,14 @@ else:
     sac_file = st.sidebar.file_uploader("시선 이동(Saccade) 파일 업로드", type=['csv'])
     blink_file = st.sidebar.file_uploader("눈 깜빡임(Blink) 업로드 (선택)", type=['csv'])
     fix_file = st.sidebar.file_uploader("시선 고정(Fixations) 업로드 (선택)", type=['csv'])
+    gaze_file = st.sidebar.file_uploader("시선 추적(Gaze/동공) 업로드 (선택)", type=['csv'])
     map_file = st.sidebar.file_uploader("객체 이름 사전(mapping.csv) 업로드 (선택)", type=['csv'])
     if ds_file and sac_file:
         df_ds = pd.read_csv(ds_file)
         df_sac = pd.read_csv(sac_file)
         df_blink = pd.read_csv(blink_file) if blink_file else None
         df_fix = pd.read_csv(fix_file) if fix_file else None
+        df_gaze = pd.read_csv(gaze_file) if gaze_file else None
         df_map = pd.read_csv(map_file) if map_file else None
         current_ds_filename = ds_file.name
         data_loaded = True
@@ -97,12 +102,12 @@ if data_loaded:
     st.sidebar.markdown("---")
     st.sidebar.header("🧠 심층 분석 동적 그래프")
     window_size = st.sidebar.slider("산출 윈도우 크기 (과거 n초)", 1.0, 10.0, 3.0, 0.5)
-    
-    # 💡 [신규] 스무딩 필터 강도 조절 슬라이더
     smoothing_level = st.sidebar.slider("📉 데이터 스무딩 강도 (노이즈 제거)", 1, 20, 5, help="값이 클수록 그래프가 부드러워지며 경향성이 뚜렷해집니다.")
     
     st.sidebar.subheader("👁️ 인지/주의력 지표")
     show_dynamic_sge = st.sidebar.checkbox("👀 동적 시선 분산도(SGE)", value=False)
+    show_dynamic_pupil = st.sidebar.checkbox("👁️ 동적 동공 크기(TEPR)", value=False)
+    show_blink_sup = st.sidebar.checkbox("🚫 눈 깜빡임 억제 구간 표시", value=False)
     show_dynamic_steer = st.sidebar.checkbox("🔄 동적 조향 엔트로피", value=False)
     
     st.sidebar.subheader("🚗 차량 거동 안정성")
@@ -200,6 +205,18 @@ if data_loaded:
         is_fix_ns = df_fix[fix_time_col].max() > 1e12
         df_fix['Time_s'] = ((df_fix[fix_time_col] - sac_start_time) / 1e9) + time_offset if is_fix_ns else (df_fix[fix_time_col] - sac_start_time) + time_offset
 
+    # 💡 [신규] 동공 데이터 시간 매핑 및 스무딩
+    if df_gaze is not None:
+        gaze_time_col = next((c for c in df_gaze.columns if 'timestamp' in c.lower() or 'time' in c.lower()), None)
+        pupil_col = next((c for c in df_gaze.columns if 'pupil' in c.lower() or 'diameter' in c.lower() or 'size' in c.lower()), None)
+        if gaze_time_col and pupil_col:
+            is_gaze_ns = df_gaze[gaze_time_col].max() > 1e12
+            df_gaze['Time_s'] = ((df_gaze[gaze_time_col] - sac_start_time) / 1e9) + time_offset if is_gaze_ns else (df_gaze[gaze_time_col] - sac_start_time) + time_offset
+            if smoothing_level > 1:
+                df_gaze['Pupil_Smooth'] = df_gaze[pupil_col].rolling(window=smoothing_level*5, min_periods=1).mean()
+            else:
+                df_gaze['Pupil_Smooth'] = df_gaze[pupil_col]
+
     lane_change_count = 0
     filtered_lane_changes = []
     
@@ -223,7 +240,7 @@ if data_loaded:
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
-    # 💡 동적 지표 계산 (윈도우 적용)
+    # 💡 동적 지표 계산
     time_vals = df_ds['Time_s'].values
 
     if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns:
@@ -270,7 +287,6 @@ if data_loaded:
             else: sdlp_vals.append(0.0)
         df_ds['Dynamic_SDLP'] = sdlp_vals
 
-    # 💡 [신규] Smoothing (이동 평균) 적용
     if smoothing_level > 1:
         if 'Dynamic_SGE' in df_ds.columns:
             df_ds['Dynamic_SGE'] = df_ds['Dynamic_SGE'].rolling(window=smoothing_level, min_periods=1).mean()
@@ -309,11 +325,23 @@ if data_loaded:
     if show_dynamic_sdlp and 'Dynamic_SDLP' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SDLP'], mode='lines', name='동적 SDLP (m)', line=dict(color='#20B2AA', width=2.5, dash='solid')), secondary_y=True)
 
+    # 💡 [신규] 동공 크기 꺾은선 차트 그리기
+    if show_dynamic_pupil and df_gaze is not None and 'Pupil_Smooth' in df_gaze.columns:
+        plot_gaze = df_gaze if len(df_gaze) < 50000 else df_gaze.iloc[::5, :]
+        fig.add_trace(go.Scatter(x=plot_gaze['Time_s'], y=plot_gaze['Pupil_Smooth'], mode='lines', name='동공 크기 (TEPR)', line=dict(color='#00BFFF', width=2.5)), secondary_y=True)
+
     if show_blink and df_blink is not None:
         blink_time_col = 'start timestamp [ns]' if 'start timestamp [ns]' in df_blink.columns else 'start timestamp'
         if blink_time_col in df_blink.columns:
             df_blink['Time_s'] = ((df_blink[blink_time_col] - sac_start_time) / 1e9) + time_offset if is_ns else (df_blink[blink_time_col] - sac_start_time) + time_offset
             fig.add_trace(go.Scatter(x=df_blink['Time_s'], y=[-5] * len(df_blink), mode='markers', name='눈 깜빡임 발생', marker=dict(symbol='line-ns', color='darkorange', size=15, line=dict(width=2)), hoverinfo='x+name'), secondary_y=False)
+
+            # 💡 [신규] 깜빡임 억제(Blink Suppression) 구간 표시
+            if show_blink_sup:
+                b_times = df_blink.sort_values('Time_s')['Time_s'].values
+                for i in range(1, len(b_times)):
+                    if b_times[i] - b_times[i-1] >= 5.0: # 5초 이상 깜빡임 없으면
+                        fig.add_vrect(x0=b_times[i-1], x1=b_times[i], fillcolor="black", opacity=0.15, layer="below", line_width=0, annotation_text="깜빡임 억제", annotation_position="top left", annotation_font_size=10, annotation_font_color="gray")
 
     if show_lane_change and lane_change_count > 0:
         for lc in filtered_lane_changes:
@@ -384,9 +412,6 @@ if data_loaded:
     fig.update_yaxes(title_text="안정성 및 심층 분석 지표", secondary_y=True, showgrid=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---------------------------------------------------------
-    # [💡 신규] 스무딩(필터) 원리 설명 Expander
-    # ---------------------------------------------------------
     with st.expander("💡 데이터 스무딩(노이즈 제거) 원리 안내", expanded=False):
         st.markdown("""
         **Q. 왜 그래프를 다듬어야(Smoothing) 하나요?**
@@ -395,7 +420,7 @@ if data_loaded:
         **Q. 이동 평균 필터(Moving Average Filter)란 무엇인가요?**
         현재 대시보드에 적용된 스무딩 기술은 데이터를 시간 순서대로 훑어가며 주변 이웃 데이터들과의 '평균'을 내어 선을 잇는 방식입니다.
         * **강도를 높일수록(윈도우 증가):** 자잘하고 의미 없는 뾰족한 가시(High-frequency noise)들이 깎여 나가고, 운전자의 진짜 반응을 나타내는 거대한 '산봉우리(Trend)'가 모습을 드러냅니다.
-        * **해석:** 스무딩 처리 후 SGE나 조향 엔트로피 그래프가 부드러운 언덕 모양으로 솟아올랐다면, 그 구간이 바로 운전자가 시각적/인지적 패닉을 겪은 **유의미한 인지 부하 구간**입니다.
+        * **해석:** 스무딩 처리 후 그래프가 부드러운 언덕 모양으로 솟아올랐다면, 그 구간이 바로 운전자가 시각적/인지적 패닉을 겪은 **유의미한 인지 부하 구간**입니다.
         """)
 
     # ---------------------------------------------------------
@@ -429,7 +454,8 @@ if data_loaded:
     st.markdown("---")
     st.subheader(f"💡 '{custom_scenario_name}' 요약 통계")
                 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    # 💡 [신규] 7열 확장 (재주시 횟수 추가)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("총 주행 시간", f"{round(df_ds['Time_s'].max(), 1)} 초")
     c2.metric("최대 시야각 발생", f"{round(df_sac[sac_amp_col].max(), 1)} deg")
     c3.metric("최대 조향 이탈", f"{round(df_ds[ds_offset_col].abs().max(), 2)} m" if ds_offset_col else "0 m")
@@ -440,8 +466,17 @@ if data_loaded:
     if eval_dista is not None and actual_h_pos is not None:
         perception_dist = max(0.0, actual_h_pos - eval_dista)
         perception_dist_str = f"{perception_dist:.1f} m"
-            
     c6.metric("🤖 최초 인지 거리", perception_dist_str)
+    
+    # 💡 [신규] 재주시 횟수 판정 로직
+    refix_count = len(humanoid_gaze_stats)
+    if refix_count == 0:
+        refix_str = "미인지"
+    elif refix_count == 1:
+        refix_str = "1회 (단번)"
+    else:
+        refix_str = f"{refix_count}회 (혼란)"
+    c7.metric("🤖 로봇 재주시", refix_str)
     
     if humanoid_gaze_stats:
         st.markdown("#### 👀 휴머노이드 누적 주시 시간 분석 (다중 인지 포함)")
@@ -553,8 +588,15 @@ if data_loaded:
                     st.markdown(f"- **실제 대입 데이터:** 총 {len(p_gaze)}개 타겟의 확률 분포 $p_i$ = [{prob_str}]")
                     st.info(f"**계산 결과 (전체 구간 SGE):** {gaze_entropy:.3f}")
                 else: st.warning("시선 고정 데이터 없음")
+            
+            # 💡 [신규] 동공 및 깜빡임 억제 설명 추가
+            st.markdown("#### 4. 동공 확장(TEPR) & 재주시(Re-fixation)")
+            with st.container(border=True):
+                st.markdown("- **동공 확장(TEPR):** 자율신경계 반응으로, 인지 부하가 급증할 때 동공이 확장됩니다. (메인 차트 동적 꺾은선 지원)")
+                st.markdown("- **눈 깜빡임 억제:** 정보 처리에 고도로 집중하거나 긴장 시(터널 비전) 깜빡임이 중단됩니다. (5초 이상 억제 시 메인 차트에 검은색 구간 표출)")
+                st.markdown("- **재주시 횟수:** 로봇을 발견 후 단번에 이해하지 못하고 반복해서 시선을 옮긴 횟수를 뜻합니다. 2회 이상 발생 시 해당 배치가 운전자에게 시각적 혼란을 야기했음을 의미합니다. (최상단 요약 통계 확인)")
 
-            st.markdown("#### 4. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
+            st.markdown("#### 5. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
             with st.container(border=True):
                 st.markdown("- **기준점:** 휴머노이드 인지 시점($t_a$) 및 차로 변경 시점($t_b$)에서 2500m 테이퍼까지 남은 여유 거리 기준 산출")
                 
@@ -587,7 +629,7 @@ if data_loaded:
                     st.warning("휴머노이드 인지 및 차로 변경 데이터가 모두 필요합니다.")
 
     # ---------------------------------------------------------
-    # 5. [강화] 시나리오 안전성 평가 (SSD & 구간 속도)
+    # 6. 시나리오 안전성 평가 (SSD & 구간 속도)
     # ---------------------------------------------------------
     st.markdown("---")
     st.subheader("🛑 시나리오 안전성 평가 (이중 SSD & 구간 속도)")
