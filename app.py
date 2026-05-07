@@ -143,10 +143,9 @@ else:
 # 2. 사이드바: 분석 옵션 및 레이어
 # ---------------------------------------------------------
 if data_loaded:
-    if data_mode == "💾 서버에 내장된 시나리오 불러오기":
-        custom_scenario_name = selected_folder
-    else:
-        custom_scenario_name = os.path.splitext(current_ds_filename)[0] if current_ds_filename else "업로드된 시나리오"
+    custom_scenario_name = selected_folder if data_mode == "💾 서버에 내장된 시나리오 불러오기" else (os.path.splitext(current_ds_filename)[0] if current_ds_filename else "업로드된 시나리오")
+    # 💡 [핵심] 시나리오 간 캐싱 간섭을 막기 위한 고유 키 생성
+    scen_key = custom_scenario_name.replace(" ", "_").replace(".", "_")
 
     st.sidebar.header("⚙️ 2. 분석 레이어 및 옵션")
     show_speed = st.sidebar.checkbox("📈 차량 속도 표시", value=True)
@@ -263,21 +262,15 @@ if data_loaded:
         is_fix_ns = df_fix[fix_time_col].max() > 1e12
         df_fix['Time_s'] = ((df_fix[fix_time_col] - sac_start_time) / 1e9) + time_offset if is_fix_ns else (df_fix[fix_time_col] - sac_start_time) + time_offset
 
-    # 💡 [보간 및 전처리] 동공 크기 처리
+    # 동공 크기 전처리
     if df_gaze is not None and 'pupil_diameter_left_mm' in df_gaze.columns and 'pupil_diameter_right_mm' in df_gaze.columns:
         is_gaze_ns = df_gaze['timestamp'].max() > 1e12
         df_gaze['Time_s'] = ((df_gaze['timestamp'] - sac_start_time) / 1e9) + time_offset if is_gaze_ns else (df_gaze['timestamp'] - sac_start_time) + time_offset
         
-        # 1. 좌/우 평균 산출
         df_gaze['Pupil_Avg'] = df_gaze[['pupil_diameter_left_mm', 'pupil_diameter_right_mm']].mean(axis=1)
-        
-        # 2. 비정상 데이터(Blink 등) NaN 처리 (정상 범위: 1.5 ~ 9.0)
         df_gaze.loc[(df_gaze['Pupil_Avg'] < 1.5) | (df_gaze['Pupil_Avg'] > 9.0), 'Pupil_Avg'] = np.nan
-        
-        # 3. 선형 보간(Interpolation)
         df_gaze['Pupil_Interp'] = df_gaze['Pupil_Avg'].interpolate(method='linear')
         
-        # 4. 스무딩 처리 (동공 가중치 증폭)
         smooth_win = max(10, smoothing_level * 10)
         df_gaze['Pupil_Smooth'] = df_gaze['Pupil_Interp'].rolling(window=smooth_win, min_periods=1).mean()
         df_gaze = df_gaze.dropna(subset=['Pupil_Smooth']).copy()
@@ -305,7 +298,7 @@ if data_loaded:
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
-    # 💡 동적 지표 계산
+    # 동적 지표 계산
     time_vals = df_ds['Time_s'].values
 
     if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns:
@@ -476,28 +469,40 @@ if data_loaded:
     st.plotly_chart(fig, use_container_width=True)
 
     # ---------------------------------------------------------
-    # [평가용 기준 데이터 (t_a, t_b) 전역 추출]
+    # [💡 딥 추출] 평가용 기준 데이터 (t_a, t_b) 전역 추출
     # ---------------------------------------------------------
-    humanoid_id = None
-    if df_fix is not None:
-        for oid, oname in objects_to_draw:
-            if "휴머노이드" in oname:
-                humanoid_id = oid
+    eval_ta, eval_tb, eval_va, eval_vb, eval_dista, eval_distb = None, None, None, None, None, None
+    
+    # 1. mapping.csv에서 휴머노이드 ID 자동 추출 (UI 체크 무관)
+    humanoid_auto_id = None
+    if df_map is not None:
+        for _, row in df_map.iterrows():
+            if "휴머노이드" in str(row.iloc[1]):
+                humanoid_auto_id = int(row.iloc[0])
                 break
                 
-    eval_ta, eval_tb, eval_va, eval_vb, eval_dista, eval_distb = None, None, None, None, None, None
-    if humanoid_id is not None and lane_change_count > 0 and ds_dist_col:
-        raw_ta = df_fix[df_fix[fix_id_col] == humanoid_id].iloc[0][fix_time_col]
-        eval_ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+    # 2. t_a 추출
+    if humanoid_auto_id is not None and df_fix is not None and fix_id_col is not None:
+        h_fixes = df_fix[df_fix[fix_id_col] == humanoid_auto_id]
+        if not h_fixes.empty:
+            raw_ta = h_fixes.iloc[0][fix_time_col]
+            eval_ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
+            
+    # 3. t_b 추출
+    if lane_change_count > 0:
         eval_tb = filtered_lane_changes[0]
         
+    # 4. v_a, v_b, dist_a, dist_b 매핑
+    if eval_ta is not None and ds_dist_col:
         row_a = df_ds.iloc[(df_ds['Time_s'] - eval_ta).abs().argsort()[:1]]
-        row_b = df_ds.iloc[(df_ds['Time_s'] - eval_tb).abs().argsort()[:1]]
-        
-        if not row_a.empty and not row_b.empty:
+        if not row_a.empty:
             eval_va = row_a[ds_speed_col].values[0]
-            eval_vb = row_b[ds_speed_col].values[0]
             eval_dista = row_a[ds_dist_col].values[0]
+            
+    if eval_tb is not None and ds_dist_col:
+        row_b = df_ds.iloc[(df_ds['Time_s'] - eval_tb).abs().argsort()[:1]]
+        if not row_b.empty:
+            eval_vb = row_b[ds_speed_col].values[0]
             eval_distb = row_b[ds_dist_col].values[0]
 
     # ---------------------------------------------------------
@@ -643,7 +648,7 @@ if data_loaded:
             with st.container(border=True):
                 st.markdown("- **동공 확장(TEPR):** 자율신경계 반응으로, 인지 부하가 급증할 때 동공이 확장됩니다. (메인 차트 동적 꺾은선 지원)")
                 st.markdown("- **눈 깜빡임 억제:** 정보 처리에 고도로 집중하거나 긴장 시(터널 비전) 깜빡임이 중단됩니다. (5초 이상 억제 시 메인 차트에 검은색 구간 표출)")
-                st.markdown("- **재주시 횟수:** 로봇을 발견 후 단번에 이해하지 못하고 반복해서 시선을 옮긴 횟수를 뜻합니다. 2회 이상 발생 시 해당 배치가 운전자에게 시각적 혼란을 야기했음을 의미합니다. (최상단 요약 통계 확인)")
+                st.markdown("- **재주시 횟수:** 로봇을 발견 후 단번에 이해하지 못하고 반복해서 시선을 옮긴 횟수를 뜻합니다. 2회 이상 발생 시 해당 배치가 운전자에게 시각적 혼란을 야기했음을 의미합니다.")
 
             st.markdown("#### 5. 충돌 예상 시간(TTC) 및 정지 거리 지수(SDI)")
             with st.container(border=True):
@@ -692,11 +697,12 @@ if data_loaded:
         ui_da = max(0.0, 2500.0 - eval_dista) if eval_dista is not None else 1500.0
         ui_db = max(0.0, 2500.0 - eval_distb) if eval_distb is not None else 1350.0
         
+        # 💡 [핵심] scen_key를 삽입하여 시나리오 변경 시 입력창 강제 업데이트
         with col_ssd1:
             st.markdown("### 🔵 [초기 안전성] 인지 시점 기준")
             st.caption("로봇을 발견한 최초 순간, 물리적으로 테이퍼 전까지 멈출 수 있는 제동 거리가 확보되는지 검증합니다.")
-            v_val_a = st.number_input("인지 시점 속도 V_a (km/h)", value=float(ui_va), format="%.2f", key="va")
-            d_val_a = st.number_input("인지 시점 여유거리 D_a (m)", value=float(ui_da), format="%.2f", key="da")
+            v_val_a = st.number_input("인지 시점 속도 V_a (km/h)", value=float(ui_va), format="%.2f", key=f"va_{scen_key}")
+            d_val_a = st.number_input("인지 시점 여유거리 D_a (m)", value=float(ui_da), format="%.2f", key=f"da_{scen_key}")
             
             ssd_a = (v_val_a**2) / (254 * (f_val + s_val)) + tr_val * (v_val_a / 3.6)
             st.latex(r"SSD_a = \frac{V_a^2}{254 \times (f + s)} + t_r \times \frac{V_a}{3.6}")
@@ -706,8 +712,8 @@ if data_loaded:
         with col_ssd2:
             st.markdown("### 🟠 [실행 안전성] 차로 변경 시점 기준")
             st.caption("실제 회피 기동(차로 변경)을 시작하는 순간의 주행 상태가 안전 마진을 만족하는지 검증합니다.")
-            v_val_b = st.number_input("변경 시점 속도 V_b (km/h)", value=float(ui_vb), format="%.2f", key="vb")
-            d_val_b = st.number_input("변경 시점 여유거리 D_b (m)", value=float(ui_db), format="%.2f", key="db")
+            v_val_b = st.number_input("변경 시점 속도 V_b (km/h)", value=float(ui_vb), format="%.2f", key=f"vb_{scen_key}")
+            d_val_b = st.number_input("변경 시점 여유거리 D_b (m)", value=float(ui_db), format="%.2f", key=f"db_{scen_key}")
             
             ssd_b = (v_val_b**2) / (254 * (f_val + s_val)) + tr_val * (v_val_b / 3.6)
             st.latex(r"SSD_b = \frac{V_b^2}{254 \times (f + s)} + t_r \times \frac{V_b}{3.6}")
@@ -719,7 +725,7 @@ if data_loaded:
         st.caption("💡 참고: 구간 속도는 휴머노이드 최초 인지 시점(t_a)부터 차로 변경 시작 시점(t_b)까지 이동한 구간의 평균 속도입니다.")
         
         ui_l = abs(eval_distb - eval_dista) if (eval_dista is not None and eval_distb is not None) else 150.0
-        l_val = st.number_input("구간 길이 L (m)", value=float(ui_l), format="%.2f")
+        l_val = st.number_input("구간 길이 L (m)", value=float(ui_l), format="%.2f", key=f"l_{scen_key}")
         
         if eval_ta is not None and eval_tb is not None and eval_tb > eval_ta:
             sms_val = (l_val / (eval_tb - eval_ta)) * 3.6
