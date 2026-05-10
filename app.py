@@ -144,7 +144,6 @@ else:
 # ---------------------------------------------------------
 if data_loaded:
     custom_scenario_name = selected_folder if data_mode == "💾 서버에 내장된 시나리오 불러오기" else (os.path.splitext(current_ds_filename)[0] if current_ds_filename else "업로드된 시나리오")
-    # 💡 [핵심] 시나리오 간 캐싱 간섭을 막기 위한 고유 키 생성
     scen_key = custom_scenario_name.replace(" ", "_").replace(".", "_")
 
     st.sidebar.header("⚙️ 2. 분석 레이어 및 옵션")
@@ -399,9 +398,29 @@ if data_loaded:
                     if b_times[i] - b_times[i-1] >= 5.0:
                         fig.add_vrect(x0=b_times[i-1], x1=b_times[i], fillcolor="black", opacity=0.15, layer="below", line_width=0, annotation_text="깜빡임 억제", annotation_position="top left", annotation_font_size=10, annotation_font_color="gray")
 
+    # 💡 [신규] 차로 변경 궤적 하이라이트에 Hover 툴팁(수직선) 추가
     if show_lane_change and lane_change_count > 0:
-        for lc in filtered_lane_changes:
-            fig.add_vrect(x0=lc-3.0, x1=lc+3.0, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text="차로 변경")
+        for i, lc in enumerate(filtered_lane_changes):
+            st_t = max(0, lc - 3.0)
+            ed_t = lc + 3.0
+            # 배경 하이라이트
+            fig.add_vrect(x0=st_t, x1=ed_t, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text=f"차로 변경 구간 {i+1}")
+            
+            # 시작점 툴팁 (마우스 호버용 투명/점선)
+            fig.add_trace(go.Scatter(
+                x=[st_t, st_t], y=[0, max_y], mode='lines', 
+                line=dict(color='orange', width=2, dash='dash'),
+                name=f"차로 변경 시작 {i+1}", 
+                hovertemplate=f"<b>🚧 차로 변경 시작</b><br>시간: {st_t:.2f}초<extra></extra>", showlegend=False
+            ), secondary_y=False)
+            
+            # 종료점 툴팁
+            fig.add_trace(go.Scatter(
+                x=[ed_t, ed_t], y=[0, max_y], mode='lines', 
+                line=dict(color='orange', width=2, dash='dash'),
+                name=f"차로 변경 종료 {i+1}", 
+                hovertemplate=f"<b>🚧 차로 변경 종료</b><br>시간: {ed_t:.2f}초<extra></extra>", showlegend=False
+            ), secondary_y=False)
 
     if show_zones and ds_dist_col:
         work_zones = [
@@ -697,7 +716,6 @@ if data_loaded:
         ui_da = max(0.0, 2500.0 - eval_dista) if eval_dista is not None else 1500.0
         ui_db = max(0.0, 2500.0 - eval_distb) if eval_distb is not None else 1350.0
         
-        # 💡 [핵심] scen_key를 삽입하여 시나리오 변경 시 입력창 강제 업데이트
         with col_ssd1:
             st.markdown("### 🔵 [초기 안전성] 인지 시점 기준")
             st.caption("로봇을 발견한 최초 순간, 물리적으로 테이퍼 전까지 멈출 수 있는 제동 거리가 확보되는지 검증합니다.")
