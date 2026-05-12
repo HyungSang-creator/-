@@ -11,9 +11,6 @@ st.set_page_config(page_title="시야각 실시간 분석 대시보드", layout=
 if 'custom_markers' not in st.session_state:
     st.session_state['custom_markers'] = {}
 
-# ---------------------------------------------------------
-# [설명 섹션] 대시보드 상단에 전처리 가이드 추가
-# ---------------------------------------------------------
 def show_preprocessing_guide():
     with st.expander("👁️ 동공 데이터가 '이상하게' 보였던 이유와 해결책 (연구자 가이드)", expanded=False):
         st.markdown("""
@@ -33,9 +30,6 @@ st.title("🚗 원시 데이터 기반 실시간 시야각 & 주행 분석기")
 st.markdown("서버에 저장된 시나리오를 불러오거나, 새로운 데이터를 직접 업로드하여 분석할 수 있습니다.")
 show_preprocessing_guide()
 
-# ---------------------------------------------------------
-# [핵심 함수 1] 바이너리 동공 데이터 파싱
-# ---------------------------------------------------------
 def load_eye_state(dtype_source, raw_source, time_source):
     try:
         if isinstance(dtype_source, str):
@@ -62,9 +56,6 @@ def load_eye_state(dtype_source, raw_source, time_source):
         st.error(f"⚠️ 동공 바이너리 파싱 실패: {e}")
         return None
 
-# ---------------------------------------------------------
-# [핵심 함수 2] 폴더 내 파일 자동 매칭
-# ---------------------------------------------------------
 def find_files_in_folder(folder_path):
     ds_path, sac_path, blink_path, fix_path, map_path = None, None, None, None, None
     raw_path, time_path, dtype_path = None, None, None
@@ -161,7 +152,7 @@ if data_loaded:
     smoothing_level = st.sidebar.slider("📉 데이터 스무딩 강도 (노이즈 제거)", 1, 20, 5, help="이 수치를 높이면 미세한 센서 떨림과 깜빡임 후유증을 지웁니다. 동공 크기의 거시적인 흐름을 보고 싶다면 10 이상으로 설정하세요.")
     
     st.sidebar.subheader("👁️ 인지/주의력 지표")
-    show_dynamic_sge = st.sidebar.checkbox("👀 동적 시선 분산도(SGE)", value=False)
+    show_dynamic_sge = st.sidebar.checkbox("👀 동적 공간 시선 분산도(Spatial SGE)", value=False)
     show_dynamic_pupil = st.sidebar.checkbox("👁️ 동적 동공 크기(TEPR)", value=False)
     show_blink_sup = st.sidebar.checkbox("🚫 눈 깜빡임 억제 구간 표시", value=False)
     show_dynamic_steer = st.sidebar.checkbox("🔄 동적 조향 엔트로피", value=False)
@@ -297,20 +288,39 @@ if data_loaded:
     else:
         y_accel = (df_ds[ds_speed_col] / 3.6).diff() / df_ds['Time_s'].diff()
 
-    # 동적 지표 계산
+    # ---------------------------------------------------------
+    # 💡 [핵심] 공간 기반 SGE(Spatial Gaze Entropy) 산출
+    # ---------------------------------------------------------
     time_vals = df_ds['Time_s'].values
 
-    if show_dynamic_sge and df_fix is not None and fix_id_col in df_fix.columns:
-        sge_vals = []
-        fix_t = df_fix['Time_s'].values; fix_i = df_fix[fix_id_col].values
-        for ct in time_vals:
-            mask = (fix_t >= ct - window_size) & (fix_t <= ct)
-            w_ids = fix_i[mask]
-            if len(w_ids) > 0:
-                _, counts = np.unique(w_ids, return_counts=True)
-                p = counts / counts.sum(); sge_vals.append(-np.sum(p * np.log2(p)))
-            else: sge_vals.append(0.0)
-        df_ds['Dynamic_SGE'] = sge_vals
+    if show_dynamic_sge and df_fix is not None:
+        fix_x_col = next((c for c in df_fix.columns if 'x' in c.lower() and ('fix' in c.lower() or 'px' in c.lower())), None)
+        fix_y_col = next((c for c in df_fix.columns if 'y' in c.lower() and ('fix' in c.lower() or 'px' in c.lower())), None)
+        
+        if fix_x_col and fix_y_col:
+            sge_vals = []
+            fix_t = df_fix['Time_s'].values
+            
+            # 시야 영역을 10x10 격자(Grid)로 분할하여 ID(0~99) 할당
+            x_min, x_max = df_fix[fix_x_col].min(), df_fix[fix_x_col].max()
+            y_min, y_max = df_fix[fix_y_col].min(), df_fix[fix_y_col].max()
+            
+            grid_x = np.floor((df_fix[fix_x_col] - x_min) / (x_max - x_min + 1e-6) * 10).astype(int)
+            grid_y = np.floor((df_fix[fix_y_col] - y_min) / (y_max - y_min + 1e-6) * 10).astype(int)
+            fix_grid_id = grid_x * 10 + grid_y
+            
+            for ct in time_vals:
+                mask = (fix_t >= ct - window_size) & (fix_t <= ct)
+                w_ids = fix_grid_id[mask].values
+                if len(w_ids) > 0:
+                    _, counts = np.unique(w_ids, return_counts=True)
+                    p = counts / counts.sum()
+                    sge_vals.append(-np.sum(p * np.log2(p)))
+                else:
+                    sge_vals.append(0.0)
+            df_ds['Dynamic_SGE'] = sge_vals
+        else:
+            st.error("좌표 데이터(X, Y)가 없어 공간 SGE를 계산할 수 없습니다.")
 
     if show_dynamic_steer:
         target_steer_col = steer_col if steer_col else ds_offset_col
@@ -374,7 +384,7 @@ if data_loaded:
         fig.add_trace(go.Scatter(x=df_sac['Time_s'], y=df_sac[sac_amp_col], mode='lines', name='시선 이동', fill='tozeroy', fillcolor='rgba(220, 20, 60, 0.4)', line=dict(color='crimson', width=0.5)), secondary_y=False)
 
     if show_dynamic_sge and 'Dynamic_SGE' in df_ds.columns:
-        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name='동적 SGE', line=dict(color='#FF8C00', width=2.5)), secondary_y=True)
+        fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_SGE'], mode='lines', name='공간 시선 분산도(SGE)', line=dict(color='#FF8C00', width=2.5)), secondary_y=True)
     if show_dynamic_steer and 'Dynamic_Steer_Ent' in df_ds.columns:
         fig.add_trace(go.Scatter(x=df_ds['Time_s'], y=df_ds['Dynamic_Steer_Ent'], mode='lines', name='동적 조향 엔트로피', line=dict(color='#8A2BE2', width=2.5, dash='solid')), secondary_y=True)
     if show_dynamic_jerk and 'Dynamic_Jerk' in df_ds.columns:
@@ -398,15 +408,12 @@ if data_loaded:
                     if b_times[i] - b_times[i-1] >= 5.0:
                         fig.add_vrect(x0=b_times[i-1], x1=b_times[i], fillcolor="black", opacity=0.15, layer="below", line_width=0, annotation_text="깜빡임 억제", annotation_position="top left", annotation_font_size=10, annotation_font_color="gray")
 
-    # 💡 [신규] 차로 변경 궤적 하이라이트에 Hover 툴팁(수직선) 추가
     if show_lane_change and lane_change_count > 0:
         for i, lc in enumerate(filtered_lane_changes):
             st_t = max(0, lc - 3.0)
             ed_t = lc + 3.0
-            # 배경 하이라이트
             fig.add_vrect(x0=st_t, x1=ed_t, fillcolor="gold", opacity=0.15, layer="below", line_width=0, annotation_text=f"차로 변경 구간 {i+1}")
             
-            # 시작점 툴팁 (마우스 호버용 투명/점선)
             fig.add_trace(go.Scatter(
                 x=[st_t, st_t], y=[0, max_y], mode='lines', 
                 line=dict(color='orange', width=2, dash='dash'),
@@ -414,7 +421,6 @@ if data_loaded:
                 hovertemplate=f"<b>🚧 차로 변경 시작</b><br>시간: {st_t:.2f}초<extra></extra>", showlegend=False
             ), secondary_y=False)
             
-            # 종료점 툴팁
             fig.add_trace(go.Scatter(
                 x=[ed_t, ed_t], y=[0, max_y], mode='lines', 
                 line=dict(color='orange', width=2, dash='dash'),
@@ -492,7 +498,6 @@ if data_loaded:
     # ---------------------------------------------------------
     eval_ta, eval_tb, eval_va, eval_vb, eval_dista, eval_distb = None, None, None, None, None, None
     
-    # 1. mapping.csv에서 휴머노이드 ID 자동 추출 (UI 체크 무관)
     humanoid_auto_id = None
     if df_map is not None:
         for _, row in df_map.iterrows():
@@ -500,18 +505,15 @@ if data_loaded:
                 humanoid_auto_id = int(row.iloc[0])
                 break
                 
-    # 2. t_a 추출
     if humanoid_auto_id is not None and df_fix is not None and fix_id_col is not None:
         h_fixes = df_fix[df_fix[fix_id_col] == humanoid_auto_id]
         if not h_fixes.empty:
             raw_ta = h_fixes.iloc[0][fix_time_col]
             eval_ta = ((raw_ta - sac_start_time) / 1e9) + time_offset if raw_ta > 1e12 else (raw_ta - sac_start_time) + time_offset
             
-    # 3. t_b 추출
     if lane_change_count > 0:
         eval_tb = filtered_lane_changes[0]
         
-    # 4. v_a, v_b, dist_a, dist_b 매핑
     if eval_ta is not None and ds_dist_col:
         row_a = df_ds.iloc[(df_ds['Time_s'] - eval_ta).abs().argsort()[:1]]
         if not row_a.empty:
@@ -652,16 +654,14 @@ if data_loaded:
                 st.warning(f"**최대 저크 (Max Jerk):** {max_jerk:.2f} $m/s^3$\n\n**급조작(위험) 비율:** {harsh_ratio:.2f} %")
 
         with col_w2:
-            st.markdown("#### 3. 누적 시선 분산도 (전체 Gaze Entropy)")
+            st.markdown("#### 3. 공간 시선 분산도 (Spatial Gaze Entropy)")
             with st.container(border=True):
-                if df_fix is not None and fix_id_col in df_fix.columns:
-                    p_gaze = df_fix[fix_id_col].value_counts(normalize=True).values
-                    p_gaze = p_gaze[p_gaze > 0]
-                    gaze_entropy = -sum(p_gaze * np.log2(p_gaze))
-                    prob_str = ", ".join([f"{p*100:.1f}%" for p in p_gaze[:5]]) + (f" ... (외 {len(p_gaze)-5}개)" if len(p_gaze)>5 else "")
-                    st.markdown(f"- **실제 대입 데이터:** 총 {len(p_gaze)}개 타겟의 확률 분포 $p_i$ = [{prob_str}]")
-                    st.info(f"**계산 결과 (전체 구간 SGE):** {gaze_entropy:.3f}")
-                else: st.warning("시선 고정 데이터 없음")
+                st.markdown("- 화면 전체를 10x10(100칸) 격자로 나누어 시선이 얼마나 흩어지는지 계산한 지표입니다.")
+                if 'Dynamic_SGE' in df_ds.columns:
+                    sge_max = df_ds['Dynamic_SGE'].max()
+                    sge_mean = df_ds['Dynamic_SGE'].replace(0, np.nan).mean()
+                    st.info(f"**최대 분산도 (Max SGE):** {sge_max:.2f}\n\n**평균 분산도 (Mean SGE):** {sge_mean:.2f}")
+                else: st.warning("좌표 데이터(X, Y) 부족")
             
             st.markdown("#### 4. 동공 확장(TEPR) & 재주시(Re-fixation)")
             with st.container(border=True):
